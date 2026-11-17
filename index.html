@@ -192,6 +192,22 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
 .lobby-list{list-style:none;padding:0;margin:14px 0 0;display:flex;flex-direction:column;gap:6px;text-align:left}
 .lobby-list li{background:var(--panel2);border:2px solid var(--line);border-radius:6px;padding:8px 12px;display:flex;justify-content:space-between;gap:8px}
 .lobby-list li b{color:var(--sun);font-family:var(--f-display);font-size:9px;align-self:center}
+.hub{margin-top:18px;max-width:620px}
+.hub-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.hub-head h3{margin:0}
+#hubStatus{font-size:14px;margin:6px 0 10px}
+#hubList{display:flex;flex-direction:column;gap:8px;max-height:34vh;overflow:auto}
+.hub-row{display:flex;gap:10px;align-items:center;background:var(--panel2);border:2px solid var(--line);border-radius:6px;padding:9px 10px}
+.hub-row.own{border-color:var(--r-legendary)}
+.hub-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.hub-main b{font-size:17px}
+.hub-main .muted{font-size:13px}
+.hub-names{font-size:12px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hub-empty{color:var(--mute);font-size:15px;padding:10px;border:2px dashed var(--line);border-radius:6px}
+.err{color:var(--red);font-weight:700;min-height:1.2em;margin:8px 0 0}
+.linkbtn{background:none;border:0;color:var(--mute);text-decoration:underline;margin-top:14px;font-size:14px}
+.owner-badge{color:var(--r-legendary);font-weight:700}
+#signup .field{text-align:left;margin-top:12px}
 .invite-banner{background:var(--pink);color:#fff;border-radius:6px;padding:10px 14px;font-weight:700;margin-bottom:14px;box-shadow:inset 0 -4px 0 #b8226e}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;background:var(--lime);color:#06210f;font-weight:700;padding:10px 16px;border-radius:6px;box-shadow:inset 0 -4px 0 #1f9a37;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.on{opacity:1}
@@ -257,6 +273,7 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
     <h2>PAUSED</h2>
     <p class="muted" id="pauseNote">Click Resume to grab the mouse again.</p>
     <div id="pauseInvite" hidden><div class="invite"><input id="pauseLink" readonly aria-label="Invite link"><button class="btn small" data-copy="#pauseLink">Copy link</button></div></div>
+    <ul class="lobby-list" id="pauseKick" hidden></ul>
     <div class="row">
       <button class="btn green big" id="btnResume">Resume</button>
       <button class="btn gray" id="btnQuit">Leave match</button>
@@ -290,6 +307,18 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
       <button class="btn yellow big" id="btnLobbyStart" hidden>Start match</button>
       <button class="btn gray" id="btnLobbyLeave">Leave</button>
     </div>
+  </div>
+</div>
+
+<div class="overlay" id="signup" hidden>
+  <div class="panel">
+    <h2 id="suTitle">CREATE YOUR PLAYER</h2>
+    <p class="muted" id="suText">Pick the name everyone sees in the hub and in matches. It stays saved in this browser.</p>
+    <div class="field"><label for="suName">Username (3 to 14 letters, numbers or _)</label><input id="suName" maxlength="14" autocomplete="off" spellcheck="false"></div>
+    <div class="field" id="suKeyWrap" hidden><label for="suKey">Owner key</label><input id="suKey" type="password" autocomplete="off"></div>
+    <p class="err" id="suErr" role="alert"></p>
+    <div class="row"><button class="btn yellow big" id="suGo">Let's go</button><button class="btn gray" id="suCancel" hidden>Cancel</button></div>
+    <button class="linkbtn" id="suOwner">Owner sign in</button>
   </div>
 </div>
 
@@ -818,7 +847,7 @@ function makeCharacter(L) {
 }
 
 /* overhead name + bars */
-function makeTag(name, isMe) {
+function makeTag(name, isMe, owner) {
   const c = makeCanvas(128, 40), g = c.getContext('2d');
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.minFilter = THREE.LinearFilter;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, fog: false, transparent: true }));
@@ -826,7 +855,7 @@ function makeTag(name, isMe) {
   const draw = (hp, sh) => {
     g.clearRect(0, 0, 128, 40);
     g.font = 'bold 15px "Pixelify Sans", sans-serif'; g.textAlign = 'center';
-    g.fillStyle = '#000a'; g.fillText(name, 65, 15); g.fillStyle = isMe ? '#ffd21f' : '#ffffff'; g.fillText(name, 64, 14);
+    g.fillStyle = '#000a'; g.fillText(name, 65, 15); g.fillStyle = owner ? '#ffb31a' : isMe ? '#ffd21f' : '#ffffff'; g.fillText(name, 64, 14);
     g.fillStyle = '#000c'; g.fillRect(14, 20, 100, 8); g.fillRect(14, 30, 100, 8);
     g.fillStyle = '#2fa8ff'; g.fillRect(15, 21, 98 * sh / 100, 6);
     g.fillStyle = '#3ddc5a'; g.fillRect(15, 31, 98 * hp / 100, 6);
@@ -1527,17 +1556,42 @@ function sUI() { if (!AU.ctx) return; osc(AU.sfx, { type: 'square', f: 660, f2: 
 function sFall(pos) { if (!AU.ctx || tooFar(pos, 60)) return; const out = outNode(pos); osc(out, { type: 'sine', f: 600, f2: 120, dur: 1.2, gain: 0.25 }); }
 
 
+/* ================= owner account ================= */
+// Only the matching private key (held by the owner) can sign the challenges below.
+const OWNER_NAME = 'Dessyc9';
+const OWNER_PUB = { kty: 'EC', crv: 'P-256', x: '9vFLPE72q3AylKNHOzADZssS0shmaL3sJZVZ1QO3hUE', y: 'Sh2vcR5afdQI2Vrl0dNJ_jiXhnI9TvgLEtSnTxlg1XE' };
+const isOwnerName = n => String(n || '').trim().toLowerCase() === OWNER_NAME.toLowerCase();
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+let _ownerPub = null;
+async function ownerPubKey() { if (!_ownerPub) _ownerPub = await crypto.subtle.importKey('jwk', OWNER_PUB, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']); return _ownerPub; }
+async function ownerSign(d, text) {
+  const k = await crypto.subtle.importKey('jwk', Object.assign({}, OWNER_PUB, { d }), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  return b64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k, new TextEncoder().encode(text)));
+}
+async function ownerVerify(text, sig) {
+  try { return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, await ownerPubKey(), unb64(sig), new TextEncoder().encode(text)); } catch (e) { return false; }
+}
+async function checkOwnerKey(d) {
+  try { const n = 'check-' + Math.random(); return await ownerVerify(n, await ownerSign(String(d).trim(), n)); } catch (e) { return false; }
+}
+const OWNER = { me: false };
+async function initOwner() { OWNER.me = !!(profile.ownerKey && await checkOwnerKey(profile.ownerKey)); if (!OWNER.me && profile.ownerKey) { delete profile.ownerKey; saveProfile(); } }
+const crown = owner => owner ? '♛ ' : '';
+
 /* ================= online play ================= */
 // Peer-to-peer: the host's browser runs the match (bots, damage, kills, timer).
-// Everyone else sends their own movement and hits to the host and draws what the host reports.
+// Lobbies live in numbered rooms, so the hub can find everyone who is playing.
 const NET = { mode: 'off', peer: null, conns: new Map(), host: null, code: '', myId: '', sendT: 0, connected: false, joinTimer: null };
 const PEER_PREFIX = 'blockstorm-dc-';
+const ROOMS = 10, MAX_PLAYERS = 12;
+const roomId = n => PEER_PREFIX + 'room-' + n;
 function netActive() { return NET.mode === 'host' || NET.mode === 'client'; }
 function isClient() { return NET.mode === 'client'; }
-function makeCode() { const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)]; return s; }
 function inviteLink() { return location.origin + location.pathname + '?join=' + NET.code; }
-function inviteCodeFromUrl() { try { const c = new URLSearchParams(location.search).get('join'); return c && /^[A-Z0-9]{4,8}$/i.test(c) ? c.toUpperCase() : null; } catch (e) { return null; } }
+function inviteCodeFromUrl() { try { const c = new URLSearchParams(location.search).get('join'); return c && /^\d{1,2}$/.test(c) && +c >= 1 && +c <= ROOMS ? +c : null; } catch (e) { return null; } }
 function charById(id) { return G.chars.find(c => c.id === id) || null; }
+const cleanName = n => String(n || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 14);
 
 function netSend(m) {
   if (NET.mode === 'host') { for (const [, info] of NET.conns) if (info.conn.open) info.conn.send(m); }
@@ -1573,46 +1627,71 @@ function showLobby(title, status) {
   $('#lobby').hidden = false; $('#lobbyTitle').textContent = title; $('#lobbyStatus').textContent = status || '';
   $('#lobbyInvite').hidden = true; $('#btnLobbyStart').hidden = true; $('#lobbyList').innerHTML = '';
 }
-function renderLobby(names) {
+function lobbyPlayers() { return [{ id: NET.myId, name: profile.name, owner: OWNER.me }].concat([...NET.conns].map(([id, i]) => ({ id, name: i.name, owner: !!i.owner }))); }
+function renderLobby(list) {
   if ($('#lobby').hidden) return;
-  $('#lobbyInvite').hidden = false; $('#inviteLink').value = inviteLink(); $('#lobbyTitle').textContent = 'LOBBY ' + NET.code;
+  NET.lastList = list;
+  $('#lobbyInvite').hidden = false; $('#inviteLink').value = inviteLink(); $('#lobbyTitle').textContent = 'LOBBY #' + NET.code;
   $('#btnLobbyStart').hidden = NET.mode !== 'host';
-  $('#lobbyStatus').textContent = NET.mode === 'host' ? `Lobby ${NET.code} is open. Start when your friends are in. Bots fill the empty spots.` : `You're in lobby ${NET.code}. Waiting for the host to start…`;
-  $('#lobbyList').innerHTML = names.map((n, i) => `<li><span>${esc(n)}</span>${i === 0 ? '<b>HOST</b>' : ''}</li>`).join('');
+  $('#lobbyStatus').textContent = NET.mode === 'host' ? `Lobby #${NET.code} is live in the hub. Anyone can join from the menu. Start when you're ready; bots fill the empty spots.` : `You're in lobby #${NET.code}. Waiting for the host to start…`;
+  $('#lobbyList').innerHTML = list.map((p, i) => `<li><span>${esc(crown(p.owner) + p.name)}</span>${i === 0 ? '<b>HOST</b>' : ''}${OWNER.me && p.id !== NET.myId && i > 0 ? `<button class="btn small pink" data-kick="${esc(p.id)}">Kick</button>` : ''}</li>`).join('');
 }
-function lobbyNames() { return [profile.name || 'Host'].concat([...NET.conns.values()].map(i => i.name)); }
+function kickPlayer(id) {
+  if (!OWNER.me) return;
+  if (NET.mode === 'host') hostKick(id); else netSend({ t: 'kick', id });
+}
+function hostKick(id) {
+  const info = NET.conns.get(id); if (!info) return;
+  try { info.conn.send({ t: 'kicked' }); } catch (e) { }
+  setTimeout(() => { try { info.conn.close(); } catch (e) { } }, 300);
+  hostDrop(id);
+}
 
 /* ---------- hosting ---------- */
-function hostLobby() {
+function hostLobby(room = 1) {
   audioInit();
   if (typeof Peer === 'undefined') { toast('Online play is not available here. Starting a solo match.'); startMatch(); return; }
-  NET.code = makeCode(); NET.mode = 'host';
-  showLobby('HOSTING', 'Opening your lobby…');
-  const peer = new Peer(PEER_PREFIX + NET.code, { debug: 0 });
+  if (room > ROOMS) { netClose(); $('#lobby').hidden = true; toast(`All ${ROOMS} lobbies are taken. Join one from the hub instead.`); return; }
+  netClose(); hubStop();
+  NET.code = String(room); NET.mode = 'host';
+  showLobby('CREATING LOBBY', 'Opening your lobby…');
+  const peer = new Peer(roomId(room), { debug: 0 });
   NET.peer = peer;
-  peer.on('open', id => { NET.myId = id; renderLobby(lobbyNames()); });
+  peer.on('open', id => { NET.myId = id; renderLobby(lobbyPlayers()); });
   peer.on('connection', conn => {
     conn.on('data', d => { try { hostOnData(conn, d); } catch (e) { console.warn(e); } });
     conn.on('close', () => hostDrop(conn.peer));
     conn.on('error', () => hostDrop(conn.peer));
   });
-  peer.on('disconnected', () => { try { if (NET.mode === 'host') peer.reconnect(); } catch (e) { } });
+  peer.on('disconnected', () => { try { if (NET.mode === 'host' && NET.peer === peer) peer.reconnect(); } catch (e) { } });
   peer.on('error', e => {
-    console.warn('peer', e.type);
-    if (e.type === 'unavailable-id') { netClose(); hostLobby(); return; }
+    if (NET.peer !== peer) return;
+    if (e.type === 'unavailable-id') { hostLobby(room + 1); return; }
     if (e.type === 'peer-unavailable') return;
+    console.warn('peer', e.type);
     if (!NET.myId) { netClose(); $('#lobby').hidden = true; toast('Could not open an online lobby. Starting a solo match.'); startMatch(); }
   });
+}
+function lobbyInfo() {
+  const humans = 1 + NET.conns.size;
+  return { t: 'info', host: profile.name, owner: OWNER.me || [...NET.conns.values()].some(i => i.owner), hostOwner: OWNER.me, players: humans, max: MAX_PLAYERS,
+    names: lobbyPlayers().map(p => crown(p.owner) + p.name).slice(0, 12), state: G.state === 'play' ? 'play' : 'lobby', left: Math.max(0, Math.round(G.left || 0)) };
 }
 function hostOnData(conn, m) {
   if (!m || typeof m !== 'object') return;
   const pid = conn.peer;
+  if (m.t === 'info?') { conn.send(lobbyInfo()); setTimeout(() => { if (!NET.conns.has(pid)) conn.close(); }, 1500); return; }
   if (m.t === 'hello') {
     if (NET.conns.has(pid)) return;
-    if (NET.conns.size >= 11) { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 500); return; }
-    const info = { conn, name: String(m.name || 'Player').replace(/[<>]/g, '').slice(0, 14) || 'Player', look: (m.look | 0) >>> 0, guns: cleanGuns(m.guns) };
+    if (NET.conns.size >= MAX_PLAYERS - 1) { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 500); return; }
+    let name = cleanName(m.name) || 'Player';
+    const claimsOwner = isOwnerName(name);
+    if (claimsOwner && !m.owner) name = 'Player' + Math.floor(Math.random() * 900 + 100);
+    const nonce = Math.random().toString(36).slice(2) + Date.now();
+    const info = { conn, name, look: (m.look | 0) >>> 0, guns: cleanGuns(m.guns), owner: false, nonce, pendingOwner: claimsOwner && !!m.owner };
     NET.conns.set(pid, info);
-    conn.send({ t: 'welcome', code: NET.code });
+    conn.send({ t: 'welcome', code: NET.code, nonce });
+    if (info.pendingOwner) setTimeout(() => { if (info.pendingOwner) { info.pendingOwner = false; renameUnverified(pid); } }, 7000);
     if (G.state === 'play') {
       // drop into the running match, replacing a bot
       const ch = makePuppet(pid, info.name, info.look, info.guns); G.chars.push(ch);
@@ -1621,12 +1700,21 @@ function hostOnData(conn, m) {
       conn.send({ t: 'start', left: G.left });
       sendRoster(); spawnChar(ch);
       addFeedNote(`${info.name} joined`);
-    } else {
-      netSend({ t: 'lobby', names: lobbyNames() });
-      renderLobby(lobbyNames());
-    }
+    } else lobbyChanged();
     return;
   }
+  const info = NET.conns.get(pid); if (!info) return;
+  if (m.t === 'prove') {
+    ownerVerify(info.nonce, String(m.s || '')).then(ok => {
+      if (!NET.conns.has(pid)) return;
+      info.pendingOwner = false;
+      if (ok) { info.owner = true; info.name = OWNER_NAME; const ch = charById(pid); if (ch) setOwner(ch, true); addFeedNote('♛ The owner is here'); }
+      else renameUnverified(pid);
+      lobbyChanged(); if (G.state === 'play') sendRoster();
+    });
+    return;
+  }
+  if (m.t === 'kick') { if (info.owner && m.id !== NET.myId) hostKick(m.id); return; }
   if (G.state !== 'play') return;
   const ch = charById(pid); if (!ch) return;
   switch (m.t) {
@@ -1640,8 +1728,7 @@ function hostOnData(conn, m) {
     }
     case 'hit': {
       const v = charById(m.v); if (!v || !ch.alive) return;
-      const def = gunDef(m.d);
-      damage(v, clamp(+m.a || 0, 0, 260), ch, def, !!m.h, m.w ? String(m.w).slice(0, 12) : null);
+      damage(v, clamp(+m.a || 0, 0, 260), ch, gunDef(m.d), !!m.h, m.w ? String(m.w).slice(0, 12) : null);
       break;
     }
     case 'fx': if (!ch.alive) return; m.id = pid; netRelay(pid, m); playFx(ch, m); break;
@@ -1649,6 +1736,15 @@ function hostOnData(conn, m) {
     case 'shove': { const v = charById(m.v); if (v && ch.alive && v.pos.distanceTo(ch.pos) < 3.5) { applyShove(ch, v, +m.dx || 0, +m.dz || 0); ch.shoveAnim = 0.3; } break; }
   }
 }
+function renameUnverified(pid) {
+  const info = NET.conns.get(pid); if (!info || info.owner) return;
+  if (isOwnerName(info.name)) {
+    info.name = 'Player' + Math.floor(Math.random() * 900 + 100);
+    const ch = charById(pid); if (ch) { ch.name = info.name; ch.tag = retag(ch); }
+    lobbyChanged(); if (G.state === 'play') sendRoster();
+  }
+}
+function lobbyChanged() { if (G.state !== 'play') { netSend({ t: 'lobby', list: lobbyPlayers() }); renderLobby(lobbyPlayers()); } }
 function hostDrop(pid) {
   const info = NET.conns.get(pid); if (!info) return;
   NET.conns.delete(pid);
@@ -1657,10 +1753,10 @@ function hostDrop(pid) {
     if (ch) { ch.dispose(); G.chars.splice(G.chars.indexOf(ch), 1); }
     if (G.state === 'play' && G.chars.filter(c => c.ai).length < Math.max(0, profile.settings.bots - NET.conns.size)) { const b = makeBot(pick(BOT_NAMES)); G.chars.push(b); spawnChar(b); }
     sendRoster(); addFeedNote(`${info.name} left`);
-  } else { netSend({ t: 'lobby', names: lobbyNames() }); renderLobby(lobbyNames()); }
+  } else lobbyChanged();
 }
 function sendRoster() {
-  netSend({ t: 'roster', list: G.chars.map(c => ({ id: c.id, name: c.name, look: c.lookSeed, guns: gunsPayload(c.weapons.map(w => w ? { def: w.def, level: w.level } : null)) })) });
+  netSend({ t: 'roster', list: G.chars.map(c => ({ id: c.id, name: c.name, owner: !!c.owner, bot: !!c.isBot, look: c.lookSeed, guns: gunsPayload(c.weapons.map(w => w ? { def: w.def, level: w.level } : null)) })) });
 }
 const r2 = v => Math.round(v * 100) / 100;
 function sendSnap() {
@@ -1686,37 +1782,43 @@ function addFeedNote(text) {
   const d = document.createElement('div'); d.className = 'k'; d.innerHTML = `<span style="color:var(--sun)">${esc(text)}</span>`;
   const f = $('#feed'); f.prepend(d); setTimeout(() => d.remove(), 5000);
 }
+function setOwner(ch, on) { ch.owner = on; ch.tag = retag(ch); }
+function retag(ch) { ch.model.root.remove(ch.tag.sprite); const t = makeTag(crown(ch.owner) + ch.name, ch.isPlayer, ch.owner); ch.model.root.add(t.sprite); t.draw(Math.max(0, ch.hp), ch.sh); return t; }
 
 /* ---------- joining ---------- */
-function joinLobby(code) {
+function joinLobby(room) {
   audioInit();
   if (typeof Peer === 'undefined') { toast('Online play is not available here.'); return; }
-  netClose();
-  NET.mode = 'client'; NET.code = code;
-  showLobby('JOINING', `Connecting to lobby ${code}…`);
+  netClose(); hubStop();
+  NET.mode = 'client'; NET.code = String(room);
+  showLobby('JOINING', `Connecting to lobby #${room}…`);
   const peer = new Peer({ debug: 0 }); NET.peer = peer;
-  const fail = msg => { if (NET.mode !== 'client') return; netClose(); quitToMenu(); toast(msg); };
-  NET.joinTimer = setTimeout(() => { if (!NET.connected) fail(`Couldn't reach lobby ${code}. The host may have closed it.`); }, 12000);
+  const fail = msg => { if (NET.mode !== 'client' || NET.peer !== peer) return; netClose(); quitToMenu(); toast(msg); };
+  NET.joinTimer = setTimeout(() => { if (!NET.connected) fail(`Couldn't reach lobby #${room}. It may have closed.`); }, 12000);
   peer.on('open', id => {
     NET.myId = id;
-    const conn = peer.connect(PEER_PREFIX + code, { reliable: true }); NET.host = conn;
-    conn.on('open', () => conn.send({ t: 'hello', name: profile.name || 'Player', look: profile.look, guns: gunsPayload(myLoadoutGuns()) }));
-    conn.on('data', d => { try { clientOnData(d); } catch (e) { console.warn(e); } });
+    const conn = peer.connect(roomId(room), { reliable: true }); NET.host = conn;
+    conn.on('open', () => conn.send({ t: 'hello', name: profile.name || 'Player', owner: OWNER.me, look: profile.look, guns: gunsPayload(myLoadoutGuns()) }));
+    conn.on('data', d => { try { clientOnData(d, fail); } catch (e) { console.warn(e); } });
     conn.on('close', () => fail('The host left, so the lobby closed.'));
     conn.on('error', () => fail('Lost the connection to the host.'));
   });
   peer.on('error', e => {
     console.warn('peer', e.type);
-    if (e.type === 'peer-unavailable') fail(`Lobby ${code} doesn't exist anymore. Ask your friend for a new link.`);
+    if (e.type === 'peer-unavailable') fail(`Lobby #${room} isn't open anymore. Pick another one in the hub.`);
     else if (!NET.connected) fail('Could not connect to the online lobby service.');
   });
 }
-function clientOnData(m) {
+function clientOnData(m, fail) {
   if (!m || typeof m !== 'object') return;
   switch (m.t) {
-    case 'welcome': NET.connected = true; clearTimeout(NET.joinTimer); renderLobby([]); break;
-    case 'full': toast('That lobby is full.'); break;
-    case 'lobby': renderLobby(m.names || []); break;
+    case 'welcome':
+      NET.connected = true; clearTimeout(NET.joinTimer); renderLobby([]);
+      if (OWNER.me && m.nonce) ownerSign(profile.ownerKey, String(m.nonce)).then(s => netSend({ t: 'prove', s }));
+      break;
+    case 'full': fail('That lobby is full.'); break;
+    case 'kicked': fail('The owner removed you from that lobby.'); break;
+    case 'lobby': renderLobby(Array.isArray(m.list) ? m.list.map(p => ({ id: String(p.id), name: cleanName(p.name), owner: !!p.owner })) : []); break;
     case 'start': startMatch({ left: m.left }); break;
     case 'roster': applyRoster(m.list || []); break;
     case 'snap': applySnap(m); break;
@@ -1742,8 +1844,11 @@ function applyRoster(list) {
   const ids = new Set(list.map(e => e.id));
   for (const c of G.chars.slice()) if (!c.isPlayer && !ids.has(c.id)) { c.dispose(); G.chars.splice(G.chars.indexOf(c), 1); }
   for (const e of list) {
-    if (e.id === NET.myId || charById(e.id)) continue;
-    G.chars.push(makePuppet(e.id, String(e.name || 'Player').slice(0, 14), (e.look | 0) >>> 0, cleanGuns(e.guns)));
+    if (e.id === NET.myId) { if (!!e.owner !== !!G.player.owner) G.player.owner = !!e.owner; continue; }
+    let c = charById(e.id);
+    if (!c) { c = makePuppet(e.id, cleanName(e.name) || 'Player', (e.look | 0) >>> 0, cleanGuns(e.guns)); c.isBot = !!e.bot; G.chars.push(c); }
+    const nm = cleanName(e.name) || 'Player';
+    if (c.name !== nm || !!c.owner !== !!e.owner) { c.name = nm; setOwner(c, !!e.owner); }
   }
   G.boardT = 0;
 }
@@ -1767,8 +1872,66 @@ function applySnap(m) {
   }
 }
 
-/* copy buttons */
+/* ================= the hub: every live lobby ================= */
+const HUB = { peer: null, scanning: false, pend: {}, list: [], timer: null, status: 'idle' };
+function hubStop() { clearInterval(HUB.timer); HUB.timer = null; try { if (HUB.peer) HUB.peer.destroy(); } catch (e) { } HUB.peer = null; HUB.scanning = false; HUB.pend = {}; }
+function hubStart() { if (HUB.timer) return; scanLobbies(); HUB.timer = setInterval(() => { if (!$('#menu').hidden && curScreen === 'main' && $('#lobby').hidden && !netActive()) scanLobbies(); }, 9000); }
+function scanLobbies() {
+  if (typeof Peer === 'undefined') { HUB.status = 'offline'; renderHub(); return; }
+  if (HUB.scanning || netActive()) return;
+  HUB.scanning = true; HUB.status = HUB.list.length ? 'ok' : 'scanning'; renderHub();
+  const found = []; let pending = ROOMS;
+  const finish = () => { if (!HUB.scanning) return; HUB.scanning = false; HUB.list = found.sort((a, b) => a.room - b.room); HUB.status = 'ok'; renderHub(); };
+  const go = () => {
+    for (let n = 1; n <= ROOMS; n++) {
+      const id = roomId(n); let done = false;
+      const end = () => { if (done) return; done = true; delete HUB.pend[id]; try { conn.close(); } catch (e) { } if (--pending <= 0) finish(); };
+      HUB.pend[id] = end;
+      const conn = HUB.peer.connect(id, { reliable: true });
+      conn.on('open', () => conn.send({ t: 'info?' }));
+      conn.on('data', m => {
+        if (m && m.t === 'info') found.push({ room: n, host: cleanName(m.host) || 'Player', owner: !!m.owner, hostOwner: !!m.hostOwner, players: clamp(m.players | 0, 1, MAX_PLAYERS), max: MAX_PLAYERS,
+          names: Array.isArray(m.names) ? m.names.slice(0, 12).map(s => String(s).slice(0, 18)) : [], state: m.state === 'play' ? 'play' : 'lobby', left: m.left | 0 });
+        end();
+      });
+      conn.on('error', end);
+      setTimeout(end, 5000);
+    }
+  };
+  if (HUB.peer && HUB.peer.open) go();
+  else {
+    try { if (HUB.peer) HUB.peer.destroy(); } catch (e) { }
+    const p = HUB.peer = new Peer({ debug: 0 });
+    p.on('open', go);
+    p.on('error', e => {
+      if (e.type === 'peer-unavailable') { const id = String(e.message || '').split(' ').pop(); if (HUB.pend[id]) HUB.pend[id](); return; }
+      HUB.scanning = false; HUB.status = 'error'; renderHub();
+    });
+  }
+}
+function renderHub() {
+  const el = $('#hubList'); if (!el) return;
+  const st = $('#hubStatus');
+  if (HUB.status === 'offline') { st.textContent = 'Online play is not available in this window.'; el.innerHTML = ''; return; }
+  if (HUB.status === 'error') { st.textContent = "Couldn't reach the lobby service. Retrying…"; }
+  else st.textContent = HUB.scanning ? 'Looking for players…' : `${HUB.list.length} live ${HUB.list.length === 1 ? 'lobby' : 'lobbies'} · updates every few seconds`;
+  if (!HUB.list.length) { el.innerHTML = HUB.scanning && HUB.status === 'scanning' ? '' : `<div class="hub-empty">No one is playing right now. Create a lobby and it shows up here for everyone.</div>`; return; }
+  el.innerHTML = HUB.list.map(l => `<div class="hub-row ${l.owner ? 'own' : ''}">
+    <div class="hub-main"><b>${esc(crown(l.hostOwner) + l.host)}'s lobby</b>
+      <span class="muted">#${l.room} · ${l.players}/${l.max} players · ${l.state === 'play' ? `In a match, ${Math.floor(l.left / 60)}:${String(l.left % 60).padStart(2, '0')} left` : 'Waiting to start'}${l.owner && !l.hostOwner ? ' · ♛ owner inside' : ''}</span>
+      <span class="hub-names">${l.names.map(esc).join(' · ')}</span></div>
+    <button class="btn green small" data-join="${l.room}" ${l.players >= l.max ? 'disabled' : ''}>${l.players >= l.max ? 'Full' : 'Join'}</button>
+  </div>`).join('');
+}
+function quickPlay() {
+  const open = HUB.list.filter(l => l.players < l.max).sort((a, b) => b.players - a.players);
+  if (open.length) joinLobby(open[0].room); else hostLobby();
+}
+
+/* clicks: copy links, kick, join from hub */
 document.addEventListener('click', e => {
+  const k = e.target.closest('[data-kick]'); if (k) { kickPlayer(k.dataset.kick); return; }
+  const j = e.target.closest('[data-join]'); if (j) { sUI(); joinLobby(+j.dataset.join); return; }
   const b = e.target.closest('[data-copy]'); if (!b) return;
   const inp = $(b.dataset.copy); const text = inp.value;
   const done = () => { b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy link', 1400); };
@@ -2504,7 +2667,7 @@ function updatePlayer(dt) {
 function playerDied(killer, def, fell) {
   const p = G.player; p.killer = killer;
   $('#death').style.display = 'flex'; $('#death h2').textContent = 'ELIMINATED';
-  $('#deathBy').innerHTML = killer ? `${fell ? 'Knocked off the tower by' : 'Taken down by'} <b style="color:var(--sun)">${esc(killer.name)}</b>${def && !fell ? ` · <span style="color:${RARITIES[def.r].color}">${esc(def.name)}</span>` : ''}` : (fell ? 'You fell off the tower' : 'Eliminated');
+  $('#deathBy').innerHTML = killer ? `${fell ? 'Knocked off the tower by' : 'Taken down by'} <b style="color:var(--sun)">${esc(crown(killer.owner) + killer.name)}</b>${def && !fell ? ` · <span style="color:${RARITIES[def.r].color}">${esc(def.name)}</span>` : ''}` : (fell ? 'You fell off the tower' : 'Eliminated');
   G.ads = 0; camera.fov = profile.settings.fov; camera.updateProjectionMatrix();
   $('#scope').style.display = 'none';
 }
@@ -2539,6 +2702,7 @@ function myLoadoutGuns() {
 function makeBot(name) {
   const r = Math.random;
   const b = new Char(name, Math.floor(r() * 1e9), false, makeBotLoadout(r), 'b' + Math.random().toString(36).slice(2, 8));
+  b.isBot = true;
   b.ai = { scanT: Math.random() * 0.3, reactT: 0, errT: 0, strafeT: 0, switchCD: 0, stuckT: 1.4, repathT: 0, path: null, pi: 0, goal: null, target: null, ey: 0, ep: 0, strafe: 1 };
   return b;
 }
@@ -2558,6 +2722,7 @@ function startMatch(opts = {}) {
   clearMatch();
   const client = isClient();
   const p = new Char(profile.name || 'You', profile.look, true, myLoadoutGuns(), netActive() ? NET.myId : 'me');
+  p.owner = OWNER.me;
   G.player = p; G.chars.push(p); buildViewmodels(p);
   G.time = 0; G.lastSec = -1; G.state = 'play'; G.paused = false;
   G.nextBolt = 3; G.ads = 0; G.hintT = 9;
@@ -2570,7 +2735,7 @@ function startMatch(opts = {}) {
     $('#death').style.display = 'flex'; $('#death h2').textContent = 'JOINING'; $('#deathBy').textContent = 'Dropping you onto a tower…'; $('#deathCd').textContent = '';
   } else {
     G.left = profile.settings.minutes * 60;
-    if (NET.mode === 'host') for (const [pid, info] of NET.conns) G.chars.push(makePuppet(pid, info.name, info.look, info.guns));
+    if (NET.mode === 'host') for (const [pid, info] of NET.conns) { const c = makePuppet(pid, info.name, info.look, info.guns); if (info.owner) setOwner(c, true); G.chars.push(c); }
     const names = BOT_NAMES.slice().sort(() => Math.random() - 0.5);
     const humans = NET.mode === 'host' ? NET.conns.size : 0;
     for (let i = 0; i < Math.max(0, profile.settings.bots - humans); i++) G.chars.push(makeBot(names[i % names.length]));
@@ -2589,14 +2754,14 @@ function endMatch() {
   const myRank = sorted.indexOf(G.player) + 1;
   $('#endTitle').textContent = myRank === 1 ? 'YOU WIN!' : `YOU PLACED #${myRank}`;
   const order = [1, 0, 2];
-  $('#podium').innerHTML = order.map(i => sorted[i] ? `<div class="p${i + 1}"><b>#${i + 1}</b><span>${esc(sorted[i].name)}</span><span class="muted">${sorted[i].kills} kills</span></div>` : '').join('');
+  $('#podium').innerHTML = order.map(i => sorted[i] ? `<div class="p${i + 1}"><b>#${i + 1}</b><span>${esc(crown(sorted[i].owner) + sorted[i].name)}</span><span class="muted">${sorted[i].kills} kills</span></div>` : '').join('');
   $('#endTable').innerHTML = scoreTable(sorted);
   $('#hud').hidden = true; $('#endScreen').hidden = false;
   if (G.player.beam) G.player.beam.visible = false;
 }
 function scoreTable(sorted) {
   return `<tr><th>#</th><th>PLAYER</th><th class="num">KILLS</th><th class="num">DEATHS</th><th class="num">BEST STREAK</th></tr>` +
-    sorted.map((c, i) => `<tr class="${c.isPlayer ? 'me' : ''}"><td>${i + 1}</td><td>${esc(c.name)}</td><td class="num">${c.kills}</td><td class="num">${c.deaths}</td><td class="num">${c.best}</td></tr>`).join('');
+    sorted.map((c, i) => `<tr class="${c.isPlayer ? 'me' : ''}"><td>${i + 1}</td><td>${esc(crown(c.owner) + c.name)}</td><td class="num">${c.kills}</td><td class="num">${c.deaths}</td><td class="num">${c.best}</td></tr>`).join('');
 }
 function quitToMenu() {
   G.state = 'menu'; G.paused = false;
@@ -2622,6 +2787,10 @@ function setPaused(v) {
   $('#pauseInvite').hidden = !netActive();
   $('#pauseNote').textContent = netActive() ? 'The match keeps going while you are paused.' : 'Click Resume to grab the mouse again.';
   if (netActive()) $('#pauseLink').value = inviteLink();
+  // the owner can remove players from any online match
+  const kl = $('#pauseKick'); const others = G.chars.filter(c => c.puppet && !c.isBot && !c.isPlayer);
+  kl.hidden = !(v && OWNER.me && netActive() && others.length);
+  if (!kl.hidden) kl.innerHTML = others.map(c => `<li><span>${esc(crown(c.owner) + c.name)}</span>${c.id.startsWith(PEER_PREFIX) ? '<b>HOST</b>' : `<button class="btn small pink" data-kick="${esc(c.id)}">Kick</button>`}</li>`).join('');
 }
 
 /* ---------- weather ---------- */
@@ -2711,7 +2880,7 @@ let _streakTO;
 function killMsg(v, streak) {
   const names = { 2: 'DOUBLE KILL', 3: 'TRIPLE KILL', 5: 'RAMPAGE', 7: 'UNSTOPPABLE', 10: 'STORM GOD' };
   const el = $('#centerMsg');
-  el.innerHTML = `${names[streak] || 'ELIMINATED'}<span class="sub">${esc(v.name)} · ${streak > 1 ? streak + ' streak' : '+1 kill'}</span>`;
+  el.innerHTML = `${names[streak] || 'ELIMINATED'}<span class="sub">${esc(crown(v.owner) + v.name)} · ${streak > 1 ? streak + ' streak' : '+1 kill'}</span>`;
   el.style.opacity = 1; clearTimeout(_streakTO); _streakTO = setTimeout(() => el.style.opacity = 0, 1700);
 }
 function addFeed(killer, victim, def, head, wname, fell) {
@@ -2719,15 +2888,15 @@ function addFeed(killer, victim, def, head, wname, fell) {
   const d = document.createElement('div'); d.className = 'k' + ((killer && killer.isPlayer) || victim.isPlayer ? ' mine' : '');
   const wl = fell ? '⤓ KNOCKED OFF' : (wname || (def ? def.name : 'FELL'));
   const col = def && !fell ? RARITIES[def.r].color : '#ffd21f';
-  d.innerHTML = (killer ? `<span>${esc(killer.name)}</span>` : '') + `<span class="w" style="background:${col}">${esc(wl)}${head ? ' ✦' : ''}</span><span>${esc(victim.name)}</span>`;
+  d.innerHTML = (killer ? `<span>${esc(crown(killer.owner) + killer.name)}</span>` : '') + `<span class="w" style="background:${col}">${esc(wl)}${head ? ' ✦' : ''}</span><span>${esc(crown(victim.owner) + victim.name)}</span>`;
   f.prepend(d); while (f.children.length > 6) f.lastChild.remove();
   setTimeout(() => d.remove(), 7000);
 }
 function hudBoard() {
   const sorted = G.chars.slice().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
   const top = sorted.slice(0, 8); if (!top.includes(G.player)) top[7] = G.player;
-  $('#board').innerHTML = top.map(c => `<div class="r ${c.isPlayer ? 'me' : ''}"><span>${sorted.indexOf(c) + 1}</span><span class="n">${esc(c.name)}</span><b>${c.kills}</b></div>`).join('');
-  $('#mykills').textContent = (netActive() ? `LOBBY ${NET.code} · ` : '') + `${G.player.kills} KILLS · LEADER ${sorted[0].kills}`;
+  $('#board').innerHTML = top.map(c => `<div class="r ${c.isPlayer ? 'me' : ''}"><span>${sorted.indexOf(c) + 1}</span><span class="n">${esc(crown(c.owner) + c.name)}</span><b>${c.kills}</b></div>`).join('');
+  $('#mykills').textContent = (netActive() ? `LOBBY #${NET.code} · ` : '') + `${G.player.kills} KILLS · LEADER ${sorted[0].kills}`;
   if ($('#tabboard').style.display === 'block') $('#tabTable').innerHTML = scoreTable(sorted);
 }
 function drawMinimap() {
@@ -2936,20 +3105,26 @@ function renderMain() {
     <div class="tag">FREE-FOR-ALL · 5 SKY TOWERS · 8 MAZE BRIDGES</div>
     <h1>Fight above the storm.</h1>
     <p>Five towers rise out of a city that never ends. Glass mazes link the rooftops, the rain never stops, and the player with the most kills when the clock hits zero wins.</p>
-    ${invite ? `<div class="invite-banner">You've been invited to lobby ${esc(invite)}. Pick your loadout, then join.</div>` : ''}
+    ${invite ? `<div class="invite-banner">You've been invited to lobby #${invite}. Pick your loadout, then join.</div>` : ''}
     <div class="row">
-      ${invite ? `<button class="btn yellow big" id="btnJoin">Join lobby</button>` : `<button class="btn yellow big" id="btnPlay">Battle online</button>`}
+      ${invite ? `<button class="btn yellow big" id="btnJoin">Join lobby #${invite}</button>` : `<button class="btn yellow big" id="btnQuick">Quick play</button>`}
+      <button class="btn pink" id="btnPlay">Create lobby</button>
       <button class="btn green" id="btnSolo">Solo vs bots</button>
-      <button class="btn pink" id="btnShopGo">Daily shop</button>
     </div>
-    <p class="muted" style="font-size:15px;margin-top:12px">${invite ? 'Joining drops you into your friend’s match, even if it already started.' : 'Battle online opens a lobby with an invite link for your friends. Bots fill the empty spots.'}</p>
+    <div class="panel hub">
+      <div class="hub-head"><h3>LIVE LOBBIES</h3><button class="btn gray small" id="btnHubRefresh">Refresh</button></div>
+      <p class="muted" id="hubStatus">Looking for players…</p>
+      <div id="hubList"></div>
+    </div>
   </div>
   <div class="side">
     <div class="panel">
       <h3>YOUR FIGHTER</h3>
       <div class="facecard"><canvas id="facePrev" width="8" height="8"></canvas>
-        <div class="field" style="flex:1;min-width:0"><label for="inName">Name</label><input id="inName" maxlength="14" value="${esc(profile.name)}"></div></div>
-      <div class="row" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn gray small" id="btnLook">New look</button></div>
+        <div style="flex:1;min-width:0"><div style="font-size:22px;font-weight:700;overflow:hidden;text-overflow:ellipsis" class="${OWNER.me ? 'owner-badge' : ''}">${esc(crown(OWNER.me) + profile.name)}</div>
+        <div class="muted" style="font-size:13px">${OWNER.me ? 'Signed in as the owner' : 'Saved in this browser'}</div></div></div>
+      <div class="row" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn gray small" id="btnLook">New look</button><button class="btn gray small" id="btnRename">Change name</button>
+        ${OWNER.me ? '<button class="btn gray small" id="btnOwnerOut">Owner sign out</button>' : '<button class="btn gray small" id="btnOwnerIn">Owner sign in</button>'}</div>
     </div>
     <div class="panel">
       <h3>LOADOUT</h3>
@@ -2967,13 +3142,52 @@ function renderMain() {
     </div>
   </div>`;
   drawFace();
-  if ($('#btnPlay')) $('#btnPlay').onclick = () => { sUI(); hostLobby(); };
+  $('#btnPlay').onclick = () => { sUI(); hostLobby(); };
   if ($('#btnJoin')) $('#btnJoin').onclick = () => { sUI(); joinLobby(invite); };
+  if ($('#btnQuick')) $('#btnQuick').onclick = () => { sUI(); quickPlay(); };
   $('#btnSolo').onclick = () => { sUI(); netClose(); startMatch(); };
-  $('#btnShopGo').onclick = () => showScreen('shop');
-  $('#inName').oninput = e => { profile.name = e.target.value.trim().slice(0, 14) || 'You'; saveProfile(); };
+  $('#btnHubRefresh').onclick = () => scanLobbies();
+  $('#btnRename').onclick = () => openSignup('rename');
+  if ($('#btnOwnerIn')) $('#btnOwnerIn').onclick = () => openSignup('owner');
+  if ($('#btnOwnerOut')) $('#btnOwnerOut').onclick = () => { delete profile.ownerKey; OWNER.me = false; profile.name = 'Player' + Math.floor(Math.random() * 900 + 100); saveProfile(); toast('Signed out of the owner account on this browser'); renderMain(); };
+  renderHub(); hubStart();
   $('#btnLook').onclick = () => { profile.look = Math.floor(Math.random() * 1e9); saveProfile(); drawFace(); };
   $('#selLo').onchange = e => { profile.active = +e.target.value; saveProfile(); renderMain(); };
+}
+/* ---------- username + owner sign in ---------- */
+let suMode = 'new';
+function openSignup(mode) {
+  suMode = mode;
+  const owner = mode === 'owner';
+  $('#signup').hidden = false;
+  $('#suTitle').textContent = owner ? 'OWNER SIGN IN' : mode === 'rename' ? 'CHANGE NAME' : 'CREATE YOUR PLAYER';
+  $('#suText').textContent = owner ? `Enter your owner key to sign in as ${OWNER_NAME}. This browser remembers it.` : 'Pick the name everyone sees in the hub and in matches. It stays saved in this browser.';
+  $('#suName').value = owner ? OWNER_NAME : (mode === 'rename' ? profile.name : '');
+  $('#suName').disabled = owner;
+  $('#suKeyWrap').hidden = !owner; $('#suKey').value = '';
+  $('#suErr').textContent = ''; $('#suCancel').hidden = mode === 'new'; $('#suOwner').hidden = owner;
+  setTimeout(() => (owner ? $('#suKey') : $('#suName')).focus(), 50);
+}
+async function submitSignup() {
+  const name = $('#suName').value.trim();
+  if (suMode === 'owner' || isOwnerName(name)) {
+    if (suMode !== 'owner') { openSignup('owner'); $('#suErr').textContent = `${OWNER_NAME} is the owner's name. Sign in with the owner key to use it.`; return; }
+    const key = $('#suKey').value.trim();
+    if (!key) { $('#suErr').textContent = 'Paste your owner key.'; return; }
+    $('#suGo').disabled = true; const ok = await checkOwnerKey(key); $('#suGo').disabled = false;
+    if (!ok) { $('#suErr').textContent = "That key doesn't match the owner account."; return; }
+    profile.ownerKey = key; profile.name = OWNER_NAME; profile.named = true; OWNER.me = true; saveProfile();
+    $('#signup').hidden = true; toast(`Signed in as ${OWNER_NAME}`); showScreen('main'); return;
+  }
+  if (!/^[A-Za-z0-9_]{3,14}$/.test(name)) { $('#suErr').textContent = 'Use 3 to 14 letters, numbers or underscores.'; return; }
+  profile.name = name; profile.named = true; saveProfile();
+  $('#signup').hidden = true; showScreen('main');
+}
+function bindSignup() {
+  $('#suGo').onclick = submitSignup;
+  $('#suCancel').onclick = () => { $('#signup').hidden = true; };
+  $('#suOwner').onclick = () => openSignup('owner');
+  for (const id of ['#suName', '#suKey']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') submitSignup(); });
 }
 function drawFace() { const c = $('#facePrev'); if (!c) return; c.getContext('2d').drawImage(faceCanvas(makeLook(profile.look)), 0, 0); }
 
@@ -3096,11 +3310,15 @@ async function boot() {
   bindInput();
   document.querySelectorAll('.navbtn[data-scr]').forEach(b => b.onclick = () => { sUI(); showScreen(b.dataset.scr); });
   document.addEventListener('pointerdown', () => audioInit(), { once: true });
+  bindSignup();
+  try { await initOwner(); } catch (e) { OWNER.me = false; }
+  if (isOwnerName(profile.name) && !OWNER.me) { profile.name = 'Player' + Math.floor(Math.random() * 900 + 100); profile.named = false; }
   $('#loading').remove();
   $('#menu').hidden = false; camera.fov = 70; camera.updateProjectionMatrix();
   showScreen('main'); updateBadge();
+  if (!profile.named) openSignup('new');
   frame();
-  window.__bs = { G, startMatch, NODES, BRIDGES, COL, findPath, nearestNode, get renderer() { return renderer; }, get scene() { return scene; }, get camera() { return camera; }, updateBot, updateRain, NET, hostLobby, joinLobby };
+  window.__bs = { G, startMatch, NODES, BRIDGES, COL, findPath, nearestNode, get renderer() { return renderer; }, get scene() { return scene; }, get camera() { return camera; }, updateBot, updateRain, NET, HUB, OWNER, hostLobby, joinLobby, scanLobbies, checkOwnerKey };
 }
 boot().catch(e => { console.error(e); const l = $('#loading'); if (l) l.innerHTML = '<div>COULD NOT START: ' + esc(e.message) + '</div>'; });
 
