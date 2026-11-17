@@ -339,7 +339,7 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
     <h2 id="suTitle">CREATE YOUR PLAYER</h2>
     <p class="muted" id="suText">Pick the name everyone sees in the hub and in matches. It stays saved in this browser.</p>
     <div class="field"><label for="suName">Username (3 to 14 letters, numbers or _)</label><input id="suName" maxlength="14" autocomplete="off" spellcheck="false"></div>
-    <div class="field" id="suKeyWrap" hidden><label for="suKey">Owner key</label><input id="suKey" type="password" autocomplete="off"></div>
+    <div class="field" id="suKeyWrap" hidden><label for="suKey">Owner password</label><input id="suKey" type="password" autocomplete="off"></div>
     <p class="err" id="suErr" role="alert"></p>
     <div class="row"><button class="btn yellow big" id="suGo">Let's go</button><button class="btn gray" id="suCancel" hidden>Cancel</button></div>
     <button class="linkbtn" id="suOwner">Owner sign in</button>
@@ -1622,7 +1622,22 @@ function sFall(pos) { if (!AU.ctx || tooFar(pos, 60)) return; const out = outNod
 /* ================= owner account ================= */
 // Only the matching private key (held by the owner) can sign the challenges below.
 const OWNER_NAME = 'Dessyc9';
-const OWNER_PUB = { kty: 'EC', crv: 'P-256', x: '9vFLPE72q3AylKNHOzADZssS0shmaL3sJZVZ1QO3hUE', y: 'Sh2vcR5afdQI2Vrl0dNJ_jiXhnI9TvgLEtSnTxlg1XE' };
+// The owner's signing key is derived from the owner password (PBKDF2), so only the public half lives here.
+const OWNER_PUB = { kty: 'EC', crv: 'P-256', x: 'XxG2eIf8XN6ATaNI0GWmhgyUgvdqOrou4YBWQKNKMrE', y: 'Cj4kvSDjjjWkXR8Hzqik4cA_uQ0n9BI75aluwvfn0dI' };
+const OWNER_SALT = 'blockstorm-dc-owner-v2', OWNER_ITER = 250000;
+/* turn the owner password into the private signing value; returns null if it doesn't match */
+async function ownerKeyFromPassword(pw) {
+  try {
+    const enc = new TextEncoder();
+    const base = await crypto.subtle.importKey('raw', enc.encode(String(pw)), 'PBKDF2', false, ['deriveBits']);
+    const d = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode(OWNER_SALT), iterations: OWNER_ITER, hash: 'SHA-256' }, base, 256));
+    const head = [0x30, 0x41, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04, 0x27, 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20];
+    const der = new Uint8Array(head.length + 32); der.set(head); der.set(d, head.length);
+    const k = await crypto.subtle.importKey('pkcs8', der, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign']);
+    const jwk = await crypto.subtle.exportKey('jwk', k);
+    return jwk.x === OWNER_PUB.x && jwk.y === OWNER_PUB.y ? jwk.d : null;
+  } catch (e) { return null; }
+}
 const isOwnerName = n => String(n || '').trim().toLowerCase() === OWNER_NAME.toLowerCase();
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
 const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -3580,7 +3595,7 @@ function openSignup(mode) {
   const owner = mode === 'owner';
   $('#signup').hidden = false;
   $('#suTitle').textContent = owner ? 'OWNER SIGN IN' : mode === 'rename' ? 'CHANGE NAME' : 'CREATE YOUR PLAYER';
-  $('#suText').textContent = owner ? `Enter your owner key to sign in as ${OWNER_NAME}. This browser remembers it.` : 'Pick the name everyone sees in the hub and in matches. It stays saved in this browser.';
+  $('#suText').textContent = owner ? `Enter your owner password to sign in as ${OWNER_NAME}. This browser remembers you.` : 'Pick the name everyone sees in the hub and in matches. It stays saved in this browser.';
   $('#suName').value = owner ? OWNER_NAME : (mode === 'rename' ? profile.name : '');
   $('#suName').disabled = owner;
   $('#suKeyWrap').hidden = !owner; $('#suKey').value = '';
@@ -3590,11 +3605,14 @@ function openSignup(mode) {
 async function submitSignup() {
   const name = $('#suName').value.trim();
   if (suMode === 'owner' || isOwnerName(name)) {
-    if (suMode !== 'owner') { openSignup('owner'); $('#suErr').textContent = `${OWNER_NAME} is the owner's name. Sign in with the owner key to use it.`; return; }
-    const key = $('#suKey').value.trim();
-    if (!key) { $('#suErr').textContent = 'Paste your owner key.'; return; }
-    $('#suGo').disabled = true; const ok = await checkOwnerKey(key); $('#suGo').disabled = false;
-    if (!ok) { $('#suErr').textContent = "That key doesn't match the owner account."; return; }
+    if (suMode !== 'owner') { openSignup('owner'); $('#suErr').textContent = `${OWNER_NAME} is the owner's name. Sign in with the owner password to use it.`; return; }
+    const pw = $('#suKey').value;
+    if (!pw) { $('#suErr').textContent = 'Type your owner password.'; return; }
+    $('#suGo').disabled = true; $('#suErr').textContent = 'Checking…';
+    const key = await ownerKeyFromPassword(pw); $('#suGo').disabled = false;
+    if (!key) { $('#suErr').textContent = "That password doesn't match the owner account."; return; }
+    $('#suErr').textContent = '';
+    // store the derived signing value, never the password itself
     profile.ownerKey = key; profile.name = OWNER_NAME; profile.named = true; OWNER.me = true; saveProfile();
     $('#signup').hidden = true; toast(`Signed in as ${OWNER_NAME}`); showScreen('main'); return;
   }
