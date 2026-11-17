@@ -204,6 +204,18 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
 .hub-main .muted{font-size:13px}
 .hub-names{font-size:12px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hub-empty{color:var(--mute);font-size:15px;padding:10px;border:2px dashed var(--line);border-radius:6px}
+#ctfBar{position:absolute;left:50%;top:80px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;background:#0b1024cc;border:3px solid #ffffff88;border-radius:6px;padding:6px 10px;white-space:nowrap}
+#ctfBar .t{font-family:var(--f-display);font-size:12px}
+#ctfBar .t.b{color:#5aa9ff}#ctfBar .t.r{color:#ff5470}
+#ctfBar .vs{font-family:var(--f-display);font-size:8px;color:var(--mute);padding:0 6px}
+#ctfBar .fl{width:12px;height:16px;background:var(--c);display:inline-block;border:2px solid #fff;border-radius:2px}
+#ctfBar .fl.carried{animation:blink .5s infinite alternate;border-color:var(--sun)}
+#ctfBar .fl.dropped{opacity:.45}
+@keyframes blink{to{opacity:.2}}
+.modes{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.modes button{background:var(--panel);border:3px solid var(--line);color:var(--ink);border-radius:6px;padding:9px 14px;font-weight:700;font-size:15px;text-align:left}
+.modes button small{display:block;font-weight:400;font-size:12px;color:var(--mute)}
+.modes button.on{border-color:var(--sun);background:var(--panel2)}
 #onlineList{display:flex;flex-direction:column;gap:6px;max-height:28vh;overflow:auto}
 .on-row{display:flex;align-items:center;gap:10px;background:var(--panel2);border:2px solid var(--line);border-radius:6px;padding:7px 10px;flex-wrap:wrap}
 .on-row .dot{width:10px;height:10px;border-radius:2px;background:var(--lime);box-shadow:0 0 8px var(--lime);flex:none}
@@ -235,6 +247,7 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
   <canvas id="minimap" width="150" height="150"></canvas>
   <div id="timer">5:00</div>
   <div id="mykills"></div>
+  <div id="ctfBar" hidden></div>
   <div id="board"></div>
   <div id="feed"></div>
   <div id="scope"></div>
@@ -308,7 +321,9 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
       <div class="invite"><input id="inviteLink" readonly aria-label="Invite link"><button class="btn small" data-copy="#inviteLink">Copy link</button></div>
       <p class="muted" style="font-size:14px">Send this link to your friends. Opening it puts them in this lobby, even after the match has started.</p>
     </div>
-    <div class="field" id="lobbyBotsWrap" hidden style="text-align:left;margin-top:12px"><label for="lobbyBots">Bots in this lobby</label>
+    <div class="field" id="lobbyBotsWrap" hidden style="text-align:left;margin-top:12px"><label for="lobbyMode">Game mode</label>
+      <select id="lobbyMode"><option value="ffa">Free-for-all: most kills wins</option><option value="ctf">Capture the flag: Blue vs Red</option></select>
+      <label for="lobbyBots">Bots in this lobby</label>
       <select id="lobbyBots"><option value="0">No bots (players only, good for 1v1)</option><option value="1">Medium bots</option><option value="2">Hard bots</option><option value="3">Extreme bots</option></select></div>
     <p class="muted" id="lobbyBotsText" hidden></p>
     <ul class="lobby-list" id="lobbyList"></ul>
@@ -857,8 +872,19 @@ function makeCharacter(L) {
   return { root, legs, arms, head, torso, gunHolder, mats: [skinM, shirtM, pantsM, shoeM, hairM, faceM, chestM] };
 }
 
+/* capture-the-flag flag: pole + pixel cloth */
+function makeFlagMesh(color) {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(_unitBox, new THREE.MeshLambertMaterial({ color: 0xdfe4f0 })); pole.scale.set(0.1, 2.6, 0.1); pole.position.y = 1.3; g.add(pole);
+  const cloth = new THREE.Mesh(_unitBox, new THREE.MeshBasicMaterial({ color, map: TEX.noise, fog: false })); cloth.scale.set(1.1, 0.7, 0.06); cloth.position.set(0.6, 2.2, 0); g.add(cloth);
+  const tip = new THREE.Mesh(_unitBox, new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false })); tip.scale.setScalar(0.18); tip.position.y = 2.65; g.add(tip);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false })); glow.scale.set(3, 3, 1); glow.position.y = 2; g.add(glow);
+  g.userData.cloth = cloth;
+  return g;
+}
+
 /* overhead name + bars */
-function makeTag(name, isMe, owner) {
+function makeTag(name, isMe, owner, team = -1) {
   const c = makeCanvas(128, 40), g = c.getContext('2d');
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.minFilter = THREE.LinearFilter;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, fog: false, transparent: true }));
@@ -866,7 +892,8 @@ function makeTag(name, isMe, owner) {
   const draw = (hp, sh) => {
     g.clearRect(0, 0, 128, 40);
     g.font = 'bold 15px "Pixelify Sans", sans-serif'; g.textAlign = 'center';
-    g.fillStyle = '#000a'; g.fillText(name, 65, 15); g.fillStyle = owner ? '#ffb31a' : isMe ? '#ffd21f' : '#ffffff'; g.fillText(name, 64, 14);
+    g.fillStyle = '#000a'; g.fillText(name, 65, 15); g.fillStyle = team === 0 ? '#5aa9ff' : team === 1 ? '#ff5470' : owner ? '#ffb31a' : isMe ? '#ffd21f' : '#ffffff'; g.fillText(name, 64, 14);
+    if (team >= 0) { g.fillStyle = team ? '#ff3355' : '#2f8bff'; g.fillRect(4, 22, 7, 14); g.fillRect(117, 22, 7, 14); }
     g.fillStyle = '#000c'; g.fillRect(14, 20, 100, 8); g.fillRect(14, 30, 100, 8);
     g.fillStyle = '#2fa8ff'; g.fillRect(15, 21, 98 * sh / 100, 6);
     g.fillStyle = '#3ddc5a'; g.fillRect(15, 31, 98 * hp / 100, 6);
@@ -906,13 +933,16 @@ function gunThumb(def) {
 
 /* ================= world: 5 sky towers + 8 maze bridges ================= */
 const TOWERS = [
-  { x: -46, z: -46, h: 15, color: '#33e1ff', name: 'NORTHWEST' },
-  { x: 46, z: -46, h: 15, color: '#ff4fd8', name: 'NORTHEAST' },
-  { x: 46, z: 46, h: 15, color: '#6dff4d', name: 'SOUTHEAST' },
-  { x: -46, z: 46, h: 15, color: '#ffa21f', name: 'SOUTHWEST' },
-  { x: 0, z: 0, h: 16, color: '#ffe14d', name: 'CENTER', center: true },
+  { x: -31, z: -31, h: 12, color: '#33e1ff', name: 'NORTHWEST' },
+  { x: 31, z: -31, h: 12, color: '#ff4fd8', name: 'NORTHEAST' },
+  { x: 31, z: 31, h: 12, color: '#6dff4d', name: 'SOUTHEAST' },
+  { x: -31, z: 31, h: 12, color: '#ffa21f', name: 'SOUTHWEST' },
+  { x: 0, z: 0, h: 13, color: '#ffe14d', name: 'CENTER', center: true },
 ];
-const BRIDGE_W = 10, BRIDGE_H = 4.2;
+const BRIDGE_W = 8, BRIDGE_H = 4.2;
+const FLAG_SPOTS = [];   // capture-the-flag stands, one per corner tower
+const CORE = { x: 0, z: 0, mesh: null };   // storm core power-up on the middle tower
+const teamOfTower = ti => TOWERS[ti].x < 0 ? 0 : 1;   // west towers blue, east towers red
 const COL = [];      // oriented box colliders
 const BRIDGES = [];
 const NODES = [];
@@ -1076,7 +1106,7 @@ function buildWorld(scene, renderer) {
   const C = TOWERS[4];
   for (let i = 0; i < 4; i++) {
     const t = TOWERS[i]; const sx = Math.sign(C.x - t.x), sz = Math.sign(C.z - t.z);
-    const k = Math.SQRT1_2 * 6;
+    const k = Math.SQRT1_2 * (BRIDGE_W / 2 + 0.5);
     const ax = t.x + sx * t.h - sx * k, az = t.z + sz * t.h - sz * k;
     const bx = C.x - sx * C.h + sx * k, bz = C.z - sz * C.h + sz * k;
     bdefs.push({ ax, az, bx, bz, outer: false, t1: i, t2: 4 });
@@ -1085,7 +1115,7 @@ function buildWorld(scene, renderer) {
     const dx = bd.bx - bd.ax, dz = bd.bz - bd.az, L = Math.hypot(dx, dz);
     const yaw = Math.atan2(dx / L, dz / L);
     const b = Object.assign(bd, { L, yaw, c: Math.cos(yaw), s: Math.sin(yaw), color: bridgeColors[bi], idx: bi });
-    const N = Math.round(L / 2.5), M = 4; b.N = N; b.M = M; b.csz = L / N; b.csx = BRIDGE_W / M;
+    const N = Math.round(L / 2.5), M = 3; b.N = N; b.M = M; b.csz = L / N; b.csx = BRIDGE_W / M;
     b.maze = genMaze(N, M, mulberry32(1000 + bi * 77));
     BRIDGES.push(b);
   });
@@ -1189,25 +1219,53 @@ function buildWorld(scene, renderer) {
     const pads = [];
     if (!t.center) {
       const sx = Math.sign(t.x), sz = Math.sign(t.z);
-      pads.push([t.x + sx * 7, t.z + sz * 7], [t.x + sx * 9, t.z - sz * 1], [t.x - sx * 1, t.z + sz * 9]);
+      pads.push([t.x + sx * 8.5, t.z - sz * 1.5], [t.x - sx * 1.5, t.z + sz * 8.5], [t.x + sx * 3.5, t.z + sz * 3.5]);
       const ringMat = new THREE.MeshBasicMaterial({ map: TEX.ring, color: t.color, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
       for (const [px, pz] of pads) {
         const ring = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 3.2), ringMat); ring.rotation.x = -Math.PI / 2; ring.position.set(px, 0.03, pz); scene.add(ring);
-        SPAWNS.push({ x: px, z: pz, yaw: Math.atan2(-(C.x - px), -(C.z - pz)), tower: ti });
+        SPAWNS.push({ x: px, z: pz, yaw: Math.atan2(-(C.x - px), -(C.z - pz)), tower: ti, team: teamOfTower(ti) });
       }
+    }
+    // flag fort: the flag sits in the outer corner behind two tall walls
+    let flagSpot = null;
+    if (!t.center) {
+      const sx = Math.sign(t.x), sz = Math.sign(t.z), fx = t.x + sx * 8, fz = t.z + sz * 8;
+      const team = teamOfTower(ti), tc = team ? '#ff3355' : '#2f8bff';
+      solid(geoConcrete, 4.2, 2.4, 0.5, fx + sx * 0.2, 0, fz - sz * 1.9, 0, '#8a90a8', 'cover');
+      solid(geoConcrete, 0.5, 2.4, 4.2, fx - sx * 1.9, 0, fz + sz * 0.2, 0, '#8a90a8', 'cover');
+      glowAdd(tc, boxGeo(4.22, 0.1, 0.52, fx + sx * 0.2, 2.42, fz - sz * 1.9)); glowAdd(tc, boxGeo(0.52, 0.1, 4.22, fx - sx * 1.9, 2.42, fz + sz * 0.2));
+      geoConcrete.push(boxGeo(1.4, 0.25, 1.4, fx, 0.125, fz, 0, 1, '#3a3f55'));
+      const ring = new THREE.Mesh(new THREE.PlaneGeometry(3, 3), new THREE.MeshBasicMaterial({ map: TEX.ring, color: tc, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+      ring.rotation.x = -Math.PI / 2; ring.position.set(fx, 0.27, fz); scene.add(ring);
+      const flag = makeFlagMesh(tc); flag.position.set(fx, 0.25, fz); flag.visible = false; scene.add(flag);
+      flagSpot = { team, x: fx, z: fz, tower: ti, mesh: flag, ring };
+      FLAG_SPOTS.push(flagSpot);
+    }
+    // storm core pedestal on the middle tower
+    if (t.center) {
+      geoConcrete.push(boxGeo(2, 0.6, 2, t.x, 0.3, t.z, 0, 1, '#3a3f55'));
+      glowAdd('#ffe14d', boxGeo(2.04, 0.08, 2.04, t.x, 0.62, t.z));
+      const core = new THREE.Group();
+      const cube = new THREE.Mesh(_unitBox, new THREE.MeshBasicMaterial({ color: 0xffe14d, fog: false })); cube.scale.setScalar(0.7); core.add(cube);
+      const inner = new THREE.Mesh(_unitBox, new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false })); inner.scale.setScalar(0.4); core.add(inner);
+      const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, color: 0xffd21f, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false })); halo.scale.set(4, 4, 1); core.add(halo);
+      const beam = new THREE.Mesh(_unitBox, new THREE.MeshBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false, fog: false })); beam.scale.set(0.5, 40, 0.5); beam.position.y = 20; core.add(beam);
+      core.position.set(t.x, 1.7, t.z); scene.add(core);
+      CORE.x = t.x; CORE.z = t.z; CORE.mesh = core; CORE.cube = cube;
     }
     // cover
     const trng = mulberry32(500 + ti * 31);
     const placed = [];
-    const want = t.center ? 16 : 10;
+    const want = t.center ? 10 : 7;
     let tries = 0;
     const crateCols = ['#ff8a1f', '#2fd0c0', '#ff3d6e', '#ffd21f', '#4d8aff', '#8f5cff'];
     while (placed.length < want && tries++ < 400) {
       const px = t.x + (trng() * 2 - 1) * (h - 2.6), pz = t.z + (trng() * 2 - 1) * (h - 2.6);
       if (inBridge(px, pz, 3.2)) continue;
       if (pads.some(p => Math.hypot(p[0] - px, p[1] - pz) < 3.4)) continue;
+      if (flagSpot && Math.hypot(flagSpot.x - px, flagSpot.z - pz) < 5) continue;
       if (placed.some(p => Math.hypot(p[0] - px, p[1] - pz) < 3.6)) continue;
-      if (t.center && Math.hypot(px - t.x, pz - t.z) < 2.5) continue;
+      if (t.center && Math.hypot(px - t.x, pz - t.z) < 3.5) continue;
       placed.push([px, pz]);
       const kind = trng();
       const rot = trng() < 0.5 ? 0 : Math.PI / 2;
@@ -1476,23 +1534,11 @@ function audioInit() {
   const bb = ctx.createBuffer(1, len, ctx.sampleRate); const bd = bb.getChannelData(0); let last = 0;
   for (let i = 0; i < len; i++) { last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02; bd[i] = last * 3.5; }
   AU.brown = bb;
-  // rain bed
-  const rain = ctx.createBufferSource(); rain.buffer = buf; rain.loop = true;
-  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 500;
-  AU.rainLP = ctx.createBiquadFilter(); AU.rainLP.type = 'lowpass'; AU.rainLP.frequency.value = 7000;
-  AU.rainG = ctx.createGain(); AU.rainG.gain.value = 0.16;
-  rain.connect(hp).connect(AU.rainLP).connect(AU.rainG).connect(AU.master); rain.start();
-  // wind
-  const wind = ctx.createBufferSource(); wind.buffer = bb; wind.loop = true;
-  const wl = ctx.createBiquadFilter(); wl.type = 'bandpass'; wl.frequency.value = 380; wl.Q.value = 0.7;
-  AU.windG = ctx.createGain(); AU.windG.gain.value = 0.22;
-  const lfo = ctx.createOscillator(); lfo.frequency.value = 0.13; const lg = ctx.createGain(); lg.gain.value = 0.12; lfo.connect(lg).connect(AU.windG.gain); lfo.start();
-  const lfo2 = ctx.createOscillator(); lfo2.frequency.value = 0.07; const lg2 = ctx.createGain(); lg2.gain.value = 160; lfo2.connect(lg2).connect(wl.frequency); lfo2.start();
-  wind.connect(wl).connect(AU.windG).connect(AU.master); wind.start();
+  // no ambient rain, wind or thunder sound: only gameplay sounds play
 }
 function setVolume(v) { if (AU.master) AU.master.gain.value = v; }
 function setIndoors(inside) {
-  if (!AU.ctx) return; const t = AU.ctx.currentTime;
+  if (!AU.ctx || !AU.rainLP) return; const t = AU.ctx.currentTime;
   AU.rainLP.frequency.setTargetAtTime(inside ? 900 : 7000, t, 0.15);
   AU.rainG.gain.setTargetAtTime(inside ? 0.11 : 0.16, t, 0.15);
   AU.windG.gain.setTargetAtTime(inside ? 0.08 : 0.22, t, 0.3);
@@ -1547,7 +1593,7 @@ function sGun(type, pos, rarity = 0) {
 }
 function sExplode(pos) { if (!AU.ctx || tooFar(pos, 160)) return; const out = outNode(pos); nz(out, { type: 'lowpass', f: 1200, f2: 80, dur: 1.1, gain: 1.2, buf: AU.brown }); nz(out, { type: 'lowpass', f: 3000, f2: 200, dur: 0.4, gain: 0.8 }); osc(out, { f: 60, f2: 25, dur: 0.6, gain: 1.0 }); }
 function sThunder(delay, near) {
-  if (!AU.ctx) return; const out = AU.sfx;
+  return; // thunder sound removed on request const out = AU.sfx;
   if (near) nz(out, { type: 'highpass', f: 1200, dur: 0.25, gain: 0.5, delay });
   nz(out, { type: 'lowpass', f: 500, f2: 60, dur: 4.5, gain: near ? 1.4 : 0.9, delay, buf: AU.brown, attack: 0.05 });
   nz(out, { type: 'lowpass', f: 260, f2: 50, dur: 3.5, gain: 0.8, delay: delay + 0.4, buf: AU.brown, attack: 0.3 });
@@ -1558,6 +1604,12 @@ function sStep(surface, pos) {
   else { nz(out, { type: 'lowpass', f: 520, dur: 0.07, gain: 0.32 * v }); nz(out, { type: 'bandpass', f: 2600, q: 2, dur: 0.05, gain: 0.07 * v }); }
 }
 function sHit(kill, head) { if (!AU.ctx) return; if (kill) { osc(AU.sfx, { type: 'square', f: 880, dur: 0.09, gain: 0.18 }); osc(AU.sfx, { type: 'square', f: 1320, dur: 0.16, gain: 0.18, delay: 0.08 }); } else osc(AU.sfx, { type: 'square', f: head ? 1800 : 1200, dur: 0.04, gain: 0.1 }); }
+function sShield(pos) {
+  if (!AU.ctx || tooFar(pos, 60)) return; const out = outNode(pos);
+  // glassy crack when a shield breaks
+  nz(out, { type: 'highpass', f: 3000, dur: 0.18, gain: 0.5 }); osc(out, { type: 'square', f: 1600, f2: 300, dur: 0.22, gain: 0.18 }); osc(out, { type: 'triangle', f: 3400, f2: 900, dur: 0.15, gain: 0.12, delay: 0.03 });
+}
+function sCapture(good) { if (!AU.ctx) return; const f = good ? [660, 880, 1320] : [520, 390, 260]; f.forEach((x, i) => osc(AU.sfx, { type: 'square', f: x, dur: 0.16, gain: 0.14, delay: i * 0.12 })); }
 function sHurt() { if (!AU.ctx) return; nz(AU.sfx, { type: 'lowpass', f: 700, dur: 0.12, gain: 0.35 }); }
 function sShove(pos) { if (!AU.ctx || tooFar(pos)) return; const out = outNode(pos); nz(out, { f: 400, f2: 1600, q: 1.5, dur: 0.22, gain: 0.5 }); }
 function sReload(pos) { if (!AU.ctx || tooFar(pos, 30)) return; const out = outNode(pos); nz(out, { type: 'highpass', f: 2500, dur: 0.03, gain: 0.25 }); nz(out, { type: 'highpass', f: 1800, dur: 0.04, gain: 0.3, delay: 0.25 }); }
@@ -1606,6 +1658,7 @@ const TP = {
   all: room => `${TOPIC}/r/${room}/a`,
   me: (room, id) => `${TOPIC}/r/${room}/c/${id}`,
 };
+function curMode() { return G.state === 'play' ? G.mode : (profile.settings.mode === 'ctf' ? 'ctf' : 'ffa'); }
 function netActive() { return NET.mode === 'host' || NET.mode === 'client'; }
 function isClient() { return NET.mode === 'client'; }
 function inviteLink() { return location.origin + location.pathname + '?join=' + NET.code + '&b=' + NET.broker; }
@@ -1620,7 +1673,7 @@ function relayAvailable() { return typeof mqtt !== 'undefined'; }
 function relayConnect(b, will) {
   return new Promise(res => {
     let done = false;
-    const c = mqtt.connect(BROKERS[b], { clientId: 'bs_' + Math.random().toString(36).slice(2, 12), clean: true, keepalive: 15, connectTimeout: 7000, reconnectPeriod: 2500, will });
+    const c = mqtt.connect(BROKERS[b], { clientId: 'bs_' + Math.random().toString(36).slice(2, 12), clean: true, keepalive: 30, connectTimeout: 7000, reconnectPeriod: 1500, resubscribe: true, will });
     const fin = ok => { if (done) return; done = true; if (!ok) { try { c.end(true); } catch (e) { } } res(ok ? c : null); };
     c.once('connect', () => fin(true));
     c.once('error', () => fin(false));
@@ -1683,7 +1736,8 @@ function renderLobby(list) {
   const lvl = NET.mode === 'host' ? botLevel() : (NET.lobbyBots | 0);
   $('#lobbyStatus').textContent = NET.mode === 'host' ? `Your lobby is live in the hub. Anyone can join from the menu. Pick the bots, then start when you're ready.` : `You're in ${NET.hostName || 'the host'}'s lobby. Waiting for the host to start…`;
   $('#lobbyBotsWrap').hidden = NET.mode !== 'host'; $('#lobbyBots').value = String(botLevel());
-  $('#lobbyBotsText').hidden = NET.mode === 'host'; $('#lobbyBotsText').textContent = 'Bots: ' + (lvl ? BOT_LEVELS[lvl] : 'none, players only');
+  $('#lobbyBotsText').hidden = NET.mode === 'host'; $('#lobbyBotsText').textContent = (NET.lobbyMode === 'ctf' ? 'Capture the flag' : 'Free-for-all') + ' · Bots: ' + (lvl ? BOT_LEVELS[lvl] : 'none, players only');
+  $('#lobbyMode').value = curMode();
   $('#lobbyList').innerHTML = list.map((p, i) => `<li><span>${esc(crown(p.owner) + p.name)}</span>${i === 0 ? '<b>HOST</b>' : ''}${OWNER.me && p.id !== NET.myId && i > 0 ? `<button class="btn small pink" data-kick="${esc(p.id)}">Kick</button>` : ''}</li>`).join('');
 }
 function kickPlayer(id) {
@@ -1722,12 +1776,14 @@ async function hostLobby() {
     const conn = info ? info.conn : { peer: pid, send: x => pub(TP.me(room, pid), x) };
     try { hostOnData(conn, m); } catch (e) { console.warn(e); }
   });
+  // after a dropped connection, put the lobby back in the hub right away
+  r.c.on('connect', () => { if (NET.client === r.c) advertise(); });
   renderLobby(lobbyPlayers()); advertise();
   NET.beat = setInterval(() => {
     advertise();
-    if (G.state !== 'play') netSend({ t: 'lobby', list: lobbyPlayers(), bots: botLevel() });
+    if (G.state !== 'play') netSend({ t: 'lobby', list: lobbyPlayers(), bots: botLevel(), mode: curMode() });
     const now = performance.now();
-    for (const [pid, info] of NET.conns) if (now - info.seen > 12000) hostDrop(pid);
+    for (const [pid, info] of NET.conns) if (now - info.seen > 25000) hostDrop(pid);
   }, 3000);
 }
 /* the hub reads this */
@@ -1735,7 +1791,7 @@ function advertise() { if (NET.mode === 'host') pub(TP.lobby(NET.code), lobbyInf
 function lobbyInfo() {
   const humans = 1 + NET.conns.size;
   return { room: NET.code, b: NET.broker, ts: Date.now(), host: profile.name, owner: OWNER.me || [...NET.conns.values()].some(i => i.owner), hostOwner: OWNER.me, players: humans, max: MAX_PLAYERS,
-    names: lobbyPlayers().map(p => crown(p.owner) + p.name).slice(0, 12), state: G.state === 'play' ? 'play' : 'lobby', left: Math.max(0, Math.round(G.left || 0)), bots: botLevel() };
+    names: lobbyPlayers().map(p => crown(p.owner) + p.name).slice(0, 12), state: G.state === 'play' ? 'play' : 'lobby', left: Math.max(0, Math.round(G.left || 0)), bots: botLevel(), mode: curMode() };
 }
 function hostOnData(conn, m) {
   if (!m || typeof m !== 'object') return;
@@ -1749,14 +1805,16 @@ function hostOnData(conn, m) {
     const nonce = Math.random().toString(36).slice(2) + Date.now();
     const info = { conn, name, look: (m.look | 0) >>> 0, guns: cleanGuns(m.guns), owner: false, nonce, pendingOwner: claimsOwner && !!m.owner, seen: performance.now() };
     NET.conns.set(pid, info);
-    conn.send({ t: 'welcome', code: NET.code, nonce, hostName: profile.name, bots: botLevel() });
+    conn.send({ t: 'welcome', code: NET.code, nonce, hostName: profile.name, bots: botLevel(), mode: curMode() });
     if (info.pendingOwner) setTimeout(() => { if (info.pendingOwner) { info.pendingOwner = false; renameUnverified(pid); } }, 7000);
     if (G.state === 'play') {
       // drop into the running match, replacing a bot
-      const ch = makePuppet(pid, info.name, info.look, info.guns); G.chars.push(ch);
-      const bots = G.chars.filter(c => c.ai);
+      const ch = makePuppet(pid, info.name, info.look, tierGuns(0)); ch.tier = 0; G.chars.push(ch);
+      if (isCTF()) setTeam(ch, smallerTeam(ch));
+      // swap out a bot, from the joiner's team when playing capture the flag
+      const bots = G.chars.filter(c => c.ai && (!isCTF() || c.team === ch.team));
       if (bots.length && bots.length > wantedBots(NET.conns.size)) { const b = bots[bots.length - 1]; b.dispose(); G.chars.splice(G.chars.indexOf(b), 1); }
-      conn.send({ t: 'start', left: G.left });
+      conn.send({ t: 'start', left: G.left, mode: G.mode });
       sendRoster(); spawnChar(ch);
       addFeedNote(`${info.name} joined`);
     } else lobbyChanged();
@@ -1803,23 +1861,26 @@ function renameUnverified(pid) {
     lobbyChanged(); if (G.state === 'play') sendRoster();
   }
 }
-function lobbyChanged() { advertise(); if (G.state !== 'play') { netSend({ t: 'lobby', list: lobbyPlayers(), bots: botLevel() }); renderLobby(lobbyPlayers()); } }
+function lobbyChanged() { advertise(); if (G.state !== 'play') { netSend({ t: 'lobby', list: lobbyPlayers(), bots: botLevel(), mode: curMode() }); renderLobby(lobbyPlayers()); } }
 function hostDrop(pid) {
   const info = NET.conns.get(pid); if (!info) return;
   NET.conns.delete(pid);
   if (G.state === 'play' || G.state === 'end') {
     const ch = charById(pid);
     if (ch) { ch.dispose(); G.chars.splice(G.chars.indexOf(ch), 1); }
-    if (G.state === 'play' && G.chars.filter(c => c.ai).length < wantedBots(NET.conns.size)) { const b = makeBot(pick(BOT_NAMES)); G.chars.push(b); spawnChar(b); }
+    if (G.state === 'play' && G.chars.filter(c => c.ai).length < wantedBots(NET.conns.size)) { const b = makeBot(pick(BOT_NAMES)); G.chars.push(b); if (isCTF()) setTeam(b, smallerTeam(b)); spawnChar(b); }
     sendRoster(); addFeedNote(`${info.name} left`);
   } else lobbyChanged();
 }
 function sendRoster() {
-  netSend({ t: 'roster', list: G.chars.map(c => ({ id: c.id, name: c.name, owner: !!c.owner, bot: !!c.isBot, look: c.lookSeed, guns: gunsPayload(c.weapons.map(w => w ? { def: w.def, level: w.level } : null)) })) });
+  netSend({ t: 'roster', mode: G.mode, list: G.chars.map(c => ({ id: c.id, name: c.name, owner: !!c.owner, bot: !!c.isBot, team: c.team ?? -1, tier: c.tier || 0, look: c.lookSeed, guns: gunsPayload(c.weapons.map(w => w ? { def: w.def, level: w.level } : null)) })) });
 }
 const r2 = v => Math.round(v * 100) / 100;
 function sendSnap() {
-  netSend({ t: 'snap', L: Math.max(0, G.left), c: G.chars.map(c => [c.id, r2(c.pos.x), r2(c.pos.y), r2(c.pos.z), r2(c.yaw), r2(c.pitch), c.cur, c.alive ? 1 : 0, Math.ceil(Math.max(0, c.hp)), Math.ceil(c.sh), c.kills, c.deaths, c.protT > 0 ? 1 : 0, r2(c.vel.x), r2(c.vel.z), c.best]) });
+  netSend({ t: 'snap', L: Math.max(0, G.left), c: G.chars.map(c => [c.id, r2(c.pos.x), r2(c.pos.y), r2(c.pos.z), r2(c.yaw), r2(c.pitch), c.cur, c.alive ? 1 : 0, Math.ceil(Math.max(0, c.hp)), Math.ceil(c.sh), c.kills, c.deaths, c.protT > 0 ? 1 : 0, r2(c.vel.x), r2(c.vel.z), c.best, c.team ?? -1, c.tier || 0, c.boostT > 0 ? 1 : 0]),
+    // flags: [state, carrier id, x, y, z]; score; storm core ready
+    f: isCTF() ? CTF.flags.map(f => [f.state === 'home' ? 0 : f.state === 'carried' ? 1 : 2, f.carrier ? f.carrier.id : 0, r2(f.x), r2(f.y), r2(f.z)]) : null,
+    s: CTF.score, k: CORE_STATE.ready ? 1 : 0 });
 }
 function netTick(dt) {
   if (!netActive()) return;
@@ -1842,7 +1903,7 @@ function addFeedNote(text) {
   const f = $('#feed'); f.prepend(d); setTimeout(() => d.remove(), 5000);
 }
 function setOwner(ch, on) { ch.owner = on; ch.tag = retag(ch); }
-function retag(ch) { ch.model.root.remove(ch.tag.sprite); const t = makeTag(crown(ch.owner) + ch.name, ch.isPlayer, ch.owner); ch.model.root.add(t.sprite); t.draw(Math.max(0, ch.hp), ch.sh); return t; }
+function retag(ch) { ch.model.root.remove(ch.tag.sprite); const t = makeTag(crown(ch.owner) + ch.name, ch.isPlayer, ch.owner, ch.team ?? -1); ch.model.root.add(t.sprite); t.draw(Math.max(0, ch.hp), ch.sh); return t; }
 
 /* ---------- joining ---------- */
 async function joinLobby(room, b = 0) {
@@ -1874,7 +1935,7 @@ async function joinLobby(room, b = 0) {
   });
   NET.joinTimer = setTimeout(() => { if (!NET.connected) fail("That lobby didn't answer. It may have just closed."); }, 12000);
   NET.beat = setInterval(() => {
-    if (NET.connected && performance.now() - NET.hostSeen > 9000) fail('The host left, so the lobby closed.');
+    if (NET.connected && performance.now() - NET.hostSeen > 20000) fail('The host left, so the lobby closed.');
     else if (NET.connected) netSend({ t: 'ping' });
   }, 2000);
 }
@@ -1883,14 +1944,17 @@ function clientOnData(m, fail) {
   switch (m.t) {
     case 'welcome':
       if (NET.connected) break;
-      NET.hostName = cleanName(m.hostName); NET.lobbyBots = m.bots | 0;
+      NET.hostName = cleanName(m.hostName); NET.lobbyBots = m.bots | 0; NET.lobbyMode = m.mode === 'ctf' ? 'ctf' : 'ffa';
       NET.connected = true; clearTimeout(NET.joinTimer); renderLobby([]);
       if (OWNER.me && m.nonce) ownerSign(profile.ownerKey, String(m.nonce)).then(s => netSend({ t: 'prove', s }));
       break;
     case 'full': fail('That lobby is full.'); break;
     case 'kicked': fail('The owner removed you from that lobby.'); break;
-    case 'lobby': NET.lobbyBots = m.bots | 0; renderLobby(Array.isArray(m.list) ? m.list.map(p => ({ id: String(p.id), name: cleanName(p.name), owner: !!p.owner })) : []); break;
-    case 'start': startMatch({ left: m.left }); break;
+    case 'lobby': NET.lobbyBots = m.bots | 0; NET.lobbyMode = m.mode === 'ctf' ? 'ctf' : 'ffa'; renderLobby(Array.isArray(m.list) ? m.list.map(p => ({ id: String(p.id), name: cleanName(p.name), owner: !!p.owner })) : []); break;
+    case 'start': startMatch({ left: m.left, mode: m.mode }); break;
+    case 'ctf': { const tm = m.team | 0; centerNote(String(m.m || '').slice(0, 80), '', TEAM_COLORS[tm]); addFeedNote(String(m.m || '').slice(0, 80)); sCapture(G.player && G.player.team === tm); break; }
+    case 'note': addFeedNote(String(m.m || '').slice(0, 90)); break;
+    case 'boost': centerNote('STORM CORE', 'Full shield and +30% damage for 15 seconds', '#ffe14d'); break;
     case 'roster': applyRoster(m.list || []); break;
     case 'snap': applySnap(m); break;
     case 'spawn': if (G.player && G.state === 'play') { spawnChar(G.player, { x: m.x, z: m.z, yaw: m.yaw, life: m.life }); } break;
@@ -1915,9 +1979,14 @@ function applyRoster(list) {
   const ids = new Set(list.map(e => e.id));
   for (const c of G.chars.slice()) if (!c.isPlayer && !ids.has(c.id)) { c.dispose(); G.chars.splice(G.chars.indexOf(c), 1); }
   for (const e of list) {
-    if (e.id === NET.myId) { if (!!e.owner !== !!G.player.owner) G.player.owner = !!e.owner; continue; }
+    if (e.id === NET.myId) {
+      if (!!e.owner !== !!G.player.owner) G.player.owner = !!e.owner;
+      if (typeof e.team === 'number' && e.team !== G.player.team) { G.player.team = e.team; if (isCTF() && e.team >= 0) centerNote(`YOU ARE ON ${TEAM_NAMES[e.team]} TEAM`, 'Grab an enemy flag and bring it to one of your own flags', TEAM_COLORS[e.team]); }
+      continue;
+    }
     let c = charById(e.id);
-    if (!c) { c = makePuppet(e.id, cleanName(e.name) || 'Player', (e.look | 0) >>> 0, cleanGuns(e.guns)); c.isBot = !!e.bot; G.chars.push(c); }
+    if (!c) { c = makePuppet(e.id, cleanName(e.name) || 'Player', (e.look | 0) >>> 0, tierGuns(clamp(e.tier | 0, 0, 4))); c.tier = clamp(e.tier | 0, 0, 4); c.isBot = !!e.bot; G.chars.push(c); }
+    if (typeof e.team === 'number' && e.team !== (c.team ?? -1)) setTeam(c, e.team);
     const nm = cleanName(e.name) || 'Player';
     if (c.name !== nm || !!c.owner !== !!e.owner) { c.name = nm; setOwner(c, !!e.owner); }
   }
@@ -1928,8 +1997,10 @@ function applySnap(m) {
   G.left = +m.L || 0;
   for (const e of m.c || []) {
     const c = charById(e[0]); if (!c) continue;
-    const [, x, y, z, yaw, pitch, cur, alive, hp, sh, kills, deaths, prot, vx, vz, best] = e;
-    c.kills = kills; c.deaths = deaths; c.best = best;
+    const [, x, y, z, yaw, pitch, cur, alive, hp, sh, kills, deaths, prot, vx, vz, best, team, tier, boost] = e;
+    c.kills = kills; c.deaths = deaths; c.best = best; c.boostT = boost ? 1 : 0;
+    if (typeof team === 'number' && team !== (c.team ?? -1)) { if (c === G.player) c.team = team; else setTeam(c, team); }
+    if (typeof tier === 'number') applyTier(c, clamp(tier, 0, 4));
     if (c === G.player) {
       if (c.alive && (c.hp !== hp || Math.ceil(c.sh) !== sh)) { c.hp = hp; c.sh = sh; hudVitals(); }
       continue;
@@ -1940,6 +2011,15 @@ function applySnap(m) {
     else if (!alive && c.alive) { c.alive = false; c.model.root.visible = false; if (c.beam) c.beam.visible = false; }
     if (c.hp !== hp || Math.round(c.sh) !== sh) { c.hp = hp; c.sh = sh; c.tag.draw(hp, sh); }
     c.protT = prot ? 0.2 : 0;
+  }
+  if (Array.isArray(m.s)) CTF.score = [m.s[0] | 0, m.s[1] | 0];
+  CORE_STATE.ready = !!m.k;
+  if (Array.isArray(m.f) && isCTF()) {
+    m.f.forEach((a, i) => {
+      const f = CTF.flags[i]; if (!f || !Array.isArray(a)) return;
+      f.state = a[0] === 1 ? 'carried' : a[0] === 2 ? 'dropped' : 'home';
+      f.carrier = a[0] === 1 ? charById(a[1]) : null; f.x = +a[2] || 0; f.y = +a[3] || 0; f.z = +a[4] || 0;
+    });
   }
 }
 
@@ -1969,7 +2049,7 @@ function hubStart() {
       // skip lobbies whose host stopped updating long ago (crashed tabs)
       if (typeof m.ts === 'number' && Math.abs(Date.now() - m.ts) > 45000) return;
       HUB.entries.set(key, { seen: performance.now(), l: { room, b, host: cleanName(m.host) || 'Player', owner: !!m.owner, hostOwner: !!m.hostOwner, players: clamp(m.players | 0, 1, MAX_PLAYERS), max: MAX_PLAYERS,
-        names: Array.isArray(m.names) ? m.names.slice(0, 12).map(x => String(x).slice(0, 18)) : [], state: m.state === 'play' ? 'play' : 'lobby', left: m.left | 0, bots: clamp(m.bots | 0, 0, 3) } });
+        names: Array.isArray(m.names) ? m.names.slice(0, 12).map(x => String(x).slice(0, 18)) : [], state: m.state === 'play' ? 'play' : 'lobby', left: m.left | 0, bots: clamp(m.bots | 0, 0, 3), mode: m.mode === 'ctf' ? 'ctf' : 'ffa' } });
       refreshHub();
     });
   });
@@ -1991,7 +2071,7 @@ function renderHub() {
   if (!HUB.list.length) { el.innerHTML = HUB.status === 'scanning' ? '' : `<div class="hub-empty">No one is playing right now. Create a lobby and it shows up here for everyone.</div>`; return; }
   el.innerHTML = HUB.list.map(l => `<div class="hub-row ${l.owner ? 'own' : ''}">
     <div class="hub-main"><b>${esc(crown(l.hostOwner) + l.host)}'s lobby</b>
-      <span class="muted">${l.players}/${l.max} players · ${l.bots ? BOT_LEVELS[l.bots] + ' bots' : 'No bots'} · ${l.state === 'play' ? `In a match, ${Math.floor(l.left / 60)}:${String(l.left % 60).padStart(2, '0')} left` : 'Waiting to start'}${l.owner && !l.hostOwner ? ' · ♛ owner inside' : ''}</span>
+      <span class="muted">${l.players}/${l.max} players · ${l.mode === 'ctf' ? 'Capture the flag' : 'Free-for-all'} · ${l.bots ? BOT_LEVELS[l.bots] + ' bots' : 'No bots'} · ${l.state === 'play' ? `In a match, ${Math.floor(l.left / 60)}:${String(l.left % 60).padStart(2, '0')} left` : 'Waiting to start'}${l.owner && !l.hostOwner ? ' · ♛ owner inside' : ''}</span>
       <span class="hub-names">${l.names.map(esc).join(' · ')}</span></div>
     <button class="btn green small" data-join="${l.room}" data-b="${l.b}" ${l.players >= l.max ? 'disabled' : ''}>${l.players >= l.max ? 'Full' : 'Join'}</button>
   </div>`).join('');
@@ -2481,6 +2561,7 @@ function knock(c, vx, vy, vz, t, add) {
 }
 function damage(v, amount, attacker, def, head, wname) {
   if (!v.alive || v.protT > 0 || G.state !== 'play') return;
+  if (sameTeam(attacker, v)) return; // no friendly fire
   if (isClient()) {
     // the host decides damage; report hits made by this player
     if (attacker === G.player) {
@@ -2489,8 +2570,11 @@ function damage(v, amount, attacker, def, head, wname) {
     }
     return;
   }
+  if (attacker && attacker.boostT > 0) amount *= 1.3; // storm core
   amount = Math.max(1, Math.round(amount));
+  const hadSh = v.sh > 0;
   const fromSh = Math.min(v.sh, amount); v.sh -= fromSh; v.hp -= amount - fromSh;
+  if (hadSh && v.sh <= 0 && v.hp > 0) sShield(v.isPlayer ? null : v.pos);
   v.lastDmgT = G.time;
   if (attacker && attacker !== v) { v.lastAttacker = attacker; v.lastAttackerT = G.time; v.lastHitDef = def; v.lastHitName = wname; }
   v.tag.draw(Math.max(0, v.hp), v.sh);
@@ -2513,6 +2597,7 @@ function killChar(v, killer, def, head, wname, fell) {
     if (killer.isPlayer) { killMsg(v, killer.streak); }
   }
   addFeed(killer, v, def, head, wname, fell);
+  ctfOnDeath(v, fell);
   if (v.isPlayer) playerDied(killer, def, fell);
   G.boardT = 0;
   if (NET.mode === 'host') netSend({ t: 'kill', v: v.id, k: killer ? killer.id : null, d: def ? def.id : null, h: head ? 1 : 0, w: wname || null, f: fell ? 1 : 0 });
@@ -2520,6 +2605,7 @@ function killChar(v, killer, def, head, wname, fell) {
 function pickSpawn(ch) {
   let best = null, bs = -1;
   for (const s of SPAWNS) {
+    if (isCTF() && ch.team >= 0 && s.team !== ch.team) continue;
     let md = 999;
     for (const o of G.chars) { if (o === ch || !o.alive) continue; md = Math.min(md, Math.hypot(o.pos.x - s.x, o.pos.z - s.z)); }
     const sc = Math.min(md, 60) + Math.random() * 8;
@@ -2549,7 +2635,7 @@ function tryShove(ch) {
   const f = dirFrom(ch.yaw, 0);
   let best = null, bd = 2.6;
   for (const o of G.chars) {
-    if (o === ch || !o.alive) continue;
+    if (o === ch || !o.alive || sameTeam(ch, o)) continue;
     const dx = o.pos.x - ch.pos.x, dz = o.pos.z - ch.pos.z, d = Math.hypot(dx, dz);
     if (d > bd || Math.abs(o.pos.y - ch.pos.y) > 1.5) continue;
     if ((dx * f.x + dz * f.z) / (d || 1) < 0.45) continue;
@@ -2606,7 +2692,7 @@ function updateBot(b, dt) {
     ai.scanT = 0.18 + Math.random() * 0.08;
     let best = null, bd = 1e9; const fwd = dirFrom(b.yaw, 0);
     for (const o of G.chars) {
-      if (o === b || !o.alive) continue;
+      if (o === b || !o.alive || sameTeam(b, o)) continue;
       const dx = o.pos.x - b.pos.x, dz = o.pos.z - b.pos.z, d = Math.hypot(dx, dz);
       if (d > D.seeRange) continue;
       const facing = (dx * fwd.x + dz * fwd.z) / (d || 1);
@@ -2667,11 +2753,14 @@ function updateBot(b, dt) {
     // if the direct move would walk off the edge, follow the nav path instead
     const L = Math.hypot(wx, wz) || 1; wx /= L; wz /= L;
     if (!safeStep(b, wx, wz)) { ai.strafe = -ai.strafe; wx = 0; wz = 0; if (d > pref) { const mv = followPath(b, tgt.pos, dt); wx = mv[0]; wz = mv[1]; } }
+    // a flag carrier keeps running home while it fights
+    if (isCTF() && carrying(b)) { const g = ctfGoal(b); if (g) { const mv = followPath(b, g, dt); wx = mv[0]; wz = mv[1]; } }
   } else {
     // roam / hunt
     b.pitch *= 1 - Math.min(1, dt * 3);
     let goal = null;
     if (tgt && ai.lastSeen) goal = ai.lastSeen;
+    else if (isCTF()) goal = ctfGoal(b);
     const mv = followPath(b, goal, dt);
     wx = mv[0]; wz = mv[1]; sprint = !!mv[2];
     if (wx || wz) { const wy = Math.atan2(-wx, -wz); b.yaw += clamp(angDiff(b.yaw, wy), -D.turn * dt * 0.7, D.turn * dt * 0.7); }
@@ -2840,9 +2929,9 @@ function myLoadoutGuns() {
 }
 function makeBot(name) {
   const r = Math.random;
-  const b = new Char(name, Math.floor(r() * 1e9), false, makeBotLoadout(r), 'b' + Math.random().toString(36).slice(2, 8));
-  b.isBot = true;
-  b.ai = { scanT: Math.random() * 0.3, reactT: 0, errT: 0, strafeT: 0, switchCD: 0, stuckT: 1.4, repathT: 0, path: null, pi: 0, goal: null, target: null, ey: 0, ep: 0, strafe: 1 };
+  const b = new Char(name, Math.floor(r() * 1e9), false, tierGuns(0), 'b' + Math.random().toString(36).slice(2, 8));
+  b.isBot = true; b.tier = 0;
+  b.ai = { scanT: Math.random() * 0.3, reactT: 0, errT: 0, strafeT: 0, switchCD: 0, stuckT: 1.4, repathT: 0, path: null, pi: 0, goal: null, target: null, ey: 0, ep: 0, strafe: 1, role: Math.random() < 0.3 ? 'def' : 'att', post: Math.floor(Math.random() * 2) };
   return b;
 }
 function makePuppet(id, name, look, guns) {
@@ -2855,13 +2944,17 @@ function clearMatch() {
   for (const p of G.proj) scene.remove(p.m);
   for (const w of (G.player ? G.player.weapons : [])) if (w && w.vm) vmScene.remove(w.vm);
   G.chars = []; G.proj = []; G.noise = []; G.player = null;
+  for (const s of FLAG_SPOTS) { s.mesh.visible = false; s.ring.visible = false; }
+  $('#ctfBar').hidden = true; if (CORE.mesh) CORE.mesh.visible = true;
 }
 function startMatch(opts = {}) {
   audioInit();
   clearMatch();
   const client = isClient();
-  const p = new Char(profile.name || 'You', profile.look, true, myLoadoutGuns(), netActive() ? NET.myId : 'me');
-  p.owner = OWNER.me;
+  G.mode = client ? (opts.mode === 'ctf' ? 'ctf' : 'ffa') : (profile.settings.mode === 'ctf' ? 'ctf' : 'ffa');
+  // everyone starts with the same Common guns; the owner starts with the best
+  const p = new Char(profile.name || 'You', profile.look, true, tierGuns(OWNER.me ? 4 : 0), netActive() ? NET.myId : 'me');
+  p.owner = OWNER.me; p.tier = OWNER.me ? 4 : 0;
   G.player = p; G.chars.push(p); buildViewmodels(p);
   G.time = 0; G.lastSec = -1; G.state = 'play'; G.paused = false;
   G.nextBolt = 3; G.ads = 0; G.hintT = 9;
@@ -2871,15 +2964,18 @@ function startMatch(opts = {}) {
     // wait for the host to place us
     G.left = opts.left || 300;
     p.alive = false; p.respawnT = 0;
+    ctfReset(); coreReset();
     $('#death').style.display = 'flex'; $('#death h2').textContent = 'JOINING'; $('#deathBy').textContent = 'Dropping you onto a tower…'; $('#deathCd').textContent = '';
   } else {
     G.left = profile.settings.minutes * 60;
-    if (NET.mode === 'host') for (const [pid, info] of NET.conns) { const c = makePuppet(pid, info.name, info.look, info.guns); if (info.owner) setOwner(c, true); G.chars.push(c); }
+    if (NET.mode === 'host') for (const [pid, info] of NET.conns) { const c = makePuppet(pid, info.name, info.look, tierGuns(info.owner ? 4 : 0)); c.tier = info.owner ? 4 : 0; if (info.owner) setOwner(c, true); G.chars.push(c); }
     const names = BOT_NAMES.slice().sort(() => Math.random() - 0.5);
     const humans = NET.mode === 'host' ? NET.conns.size : 0;
     for (let i = 0; i < wantedBots(humans); i++) G.chars.push(makeBot(names[i % names.length]));
-    if (NET.mode === 'host') { netSend({ t: 'start', left: G.left }); sendRoster(); }
+    assignTeams(); ctfReset(); coreReset();
+    if (NET.mode === 'host') { netSend({ t: 'start', left: G.left, mode: G.mode }); sendRoster(); }
     for (const c of G.chars) spawnChar(c);
+    if (isCTF()) centerNote(`YOU ARE ON ${TEAM_NAMES[p.team]} TEAM`, 'Grab an enemy flag and bring it to one of your own flags', TEAM_COLORS[p.team]);
   }
   buildSlotsHud(); hudVitals(); hudWeapon(); hudBoard(); buildCrosshair();
   lockPointer();
@@ -2892,6 +2988,11 @@ function endMatch() {
   const sorted = G.chars.slice().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
   const myRank = sorted.indexOf(G.player) + 1;
   $('#endTitle').textContent = myRank === 1 ? 'YOU WIN!' : `YOU PLACED #${myRank}`;
+  if (isCTF()) {
+    const tk = [0, 1].map(tm => G.chars.filter(c => c.team === tm).reduce((s, c) => s + c.kills, 0));
+    const w = CTF.score[0] !== CTF.score[1] ? (CTF.score[0] > CTF.score[1] ? 0 : 1) : tk[0] !== tk[1] ? (tk[0] > tk[1] ? 0 : 1) : -1;
+    $('#endTitle').textContent = (w < 0 ? 'DRAW' : TEAM_NAMES[w] + ' TEAM WINS') + `  ·  ${CTF.score[0]} - ${CTF.score[1]}`;
+  }
   const order = [1, 0, 2];
   $('#podium').innerHTML = order.map(i => sorted[i] ? `<div class="p${i + 1}"><b>#${i + 1}</b><span>${esc(crown(sorted[i].owner) + sorted[i].name)}</span><span class="muted">${sorted[i].kills} kills</span></div>` : '').join('');
   $('#endTable').innerHTML = scoreTable(sorted);
@@ -3034,12 +3135,12 @@ function addFeed(killer, victim, def, head, wname, fell) {
 function hudBoard() {
   const sorted = G.chars.slice().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
   const top = sorted.slice(0, 8); if (!top.includes(G.player)) top[7] = G.player;
-  $('#board').innerHTML = top.map(c => `<div class="r ${c.isPlayer ? 'me' : ''}"><span>${sorted.indexOf(c) + 1}</span><span class="n">${esc(crown(c.owner) + c.name)}</span><b>${c.kills}</b></div>`).join('');
-  $('#mykills').textContent = (netActive() ? `LOBBY #${NET.code} · ` : '') + `${G.player.kills} KILLS · LEADER ${sorted[0].kills}`;
+  $('#board').innerHTML = top.map(c => `<div class="r ${c.isPlayer ? 'me' : ''}"><span>${sorted.indexOf(c) + 1}</span><span class="n" style="${c.team >= 0 && !c.isPlayer ? 'color:' + (c.team ? '#ff7088' : '#7cbcff') : ''}">${esc(crown(c.owner) + c.name)}</span><b>${c.kills}</b></div>`).join('');
+  $('#mykills').textContent = (isCTF() && G.player.team >= 0 ? TEAM_NAMES[G.player.team] + ' TEAM · ' : '') + `GUNS: ${RARITIES[G.player.tier || 0].name.toUpperCase()} · ` + (netActive() ? `LOBBY #${NET.code} · ` : '') + `${G.player.kills} KILLS · LEADER ${sorted[0].kills}`;
   if ($('#tabboard').style.display === 'block') $('#tabTable').innerHTML = scoreTable(sorted);
 }
 function drawMinimap() {
-  const cv = $('#minimap'), g = cv.getContext('2d'), S = 150, sc = S / 136;
+  const cv = $('#minimap'), g = cv.getContext('2d'), S = 150, sc = S / 92;
   const X = x => S / 2 + x * sc, Z = z => S / 2 + z * sc;
   g.clearRect(0, 0, S, S);
   for (const b of BRIDGES) {
@@ -3047,9 +3148,12 @@ function drawMinimap() {
     g.fillStyle = b.color + '55'; g.fillRect(-BRIDGE_W / 2 * sc, 0, BRIDGE_W * sc, b.L * sc); g.restore();
   }
   for (const t of TOWERS) { g.fillStyle = '#2a3260'; g.strokeStyle = t.color; g.lineWidth = 2; g.fillRect(X(t.x - t.h), Z(t.z - t.h), t.h * 2 * sc, t.h * 2 * sc); g.strokeRect(X(t.x - t.h), Z(t.z - t.h), t.h * 2 * sc, t.h * 2 * sc); }
+  if (isCTF()) for (const f of CTF.flags) { g.fillStyle = TEAM_COLORS[f.team]; g.strokeStyle = '#fff'; g.lineWidth = 1; g.fillRect(X(f.x) - 4, Z(f.z) - 4, 8, 8); if (f.state !== 'home') g.strokeRect(X(f.x) - 5, Z(f.z) - 5, 10, 10); }
   for (const c of G.chars) {
-    if (c.isPlayer || !c.alive || G.time - c.lastShotT > 1.5) continue;
-    g.fillStyle = '#ff3355'; g.fillRect(X(c.pos.x) - 3, Z(c.pos.z) - 3, 6, 6);
+    if (c.isPlayer || !c.alive) continue;
+    const mate = sameTeam(G.player, c);
+    if (!mate && G.time - c.lastShotT > 1.5) continue;
+    g.fillStyle = mate ? '#5aa9ff' : '#ff3355'; g.fillRect(X(c.pos.x) - 3, Z(c.pos.z) - 3, 6, 6);
   }
   const p = G.player;
   if (p.alive) {
@@ -3104,6 +3208,7 @@ function step(dt) {
     animChar(c, dt);
   }
   updateProjectiles(dt);
+  modeStep(dt);
   netTick(dt);
   G.noise = G.noise.filter(n => G.time - n.t < 4);
   if (G.left <= 0 && !isClient()) endMatch();
@@ -3120,12 +3225,13 @@ function frame() {
   _hiddenLast = performance.now();
   if (G.state === 'play' && (!G.paused || netActive())) {
     step(dt);
+    modeVisual(dt);
     updateViewmodel(dt);
     updateHud(dt);
   } else if (G.state === 'menu' || G.state === 'end') {
     // slow orbit over the arena behind the menu
     G.menuT += dt * 0.05; G.time += dt;
-    const r = 112; camera.position.set(Math.cos(G.menuT) * r, 26 + Math.sin(G.menuT * 0.7) * 5, Math.sin(G.menuT) * r);
+    const r = 78; camera.position.set(Math.cos(G.menuT) * r, 20 + Math.sin(G.menuT * 0.7) * 4, Math.sin(G.menuT) * r);
     camera.lookAt(0, -6, 0);
   }
   if (G.state !== 'play' || !G.paused || netActive()) { updateWeather(dt); updateFX(dt); updateRain(dt, camera, profile.settings.quality === 0 ? 0.5 : 1); }
@@ -3181,8 +3287,171 @@ function bindInput() {
   $('#btnAgain').onclick = () => startMatch();
   $('#btnLobbyStart').onclick = () => { sUI(); startMatch(); };
   $('#btnLobbyLeave').onclick = () => quitToMenu();
+  $('#lobbyMode').onchange = e => { profile.settings.mode = e.target.value === 'ctf' ? 'ctf' : 'ffa'; saveProfile(); lobbyChanged(); };
   $('#lobbyBots').onchange = e => { profile.settings.botLevel = clamp(+e.target.value, 0, 3); saveProfile(); lobbyChanged(); };
   $('#btnMenu').onclick = quitToMenu;
+}
+
+
+/* ================= kill tiers: better guns for more kills in this match ================= */
+// Everyone starts a match with the same Common guns. Kills in the match unlock the next rarity.
+// The verified owner starts at the top tier.
+const TIER_KILLS = [0, 5, 10, 20, 30];
+const TIER_GUNS = {
+  primary: ['block_ar', 'rain_runner', 'thunderclap', 'gale_force', 'red_comet'],
+  backup: ['pocket_pop', 'neon_nine', 'volt_pistol', 'gold_brick', 'pixel_phaser'],
+  sniper: ['long_plank', 'skyline_50', 'storm_needle', 'lightning_rod', 'void_lance'],
+  special: ['chunk_rotor', 'tower_roller', 'cube_cannon', 'prism_beam', 'zeus_cube'],
+};
+function tierFor(c) { if (c.owner) return 4; let t = 0; for (let i = 0; i < TIER_KILLS.length; i++) if (c.kills >= TIER_KILLS[i]) t = i; return t; }
+function tierGuns(tier) { return SLOTS.map(s => ({ def: gunDef(TIER_GUNS[s.id][tier]), level: 1 })); }
+function applyTier(c, tier) {
+  if (c.tier === tier) return;
+  const first = c.tier === undefined, up = !first && tier > c.tier;
+  c.tier = tier;
+  const old = c.weapons, cur = c.cur;
+  c.weapons = tierGuns(tier).map(g => makeWeapon(g.def, g.level));
+  c.tpGuns = c.weapons.map(w => { const g = makeGunModel(w.def); g.scale.setScalar(0.85); return g; });
+  c.cur = c.weapons[cur] ? cur : 0; c.setGunModel();
+  if (c.isPlayer) {
+    for (const w of old) if (w && w.vm) vmScene.remove(w.vm);
+    buildViewmodels(c); buildSlotsHud(); hudWeapon();
+    if (up) { const R = RARITIES[tier]; centerNote(`${R.name.toUpperCase()} GUNS UNLOCKED`, tier < 4 ? `Next upgrade at ${TIER_KILLS[tier + 1]} kills` : 'You have the best guns in the game', R.color); sCapture(true); }
+  }
+}
+function checkTier(c) { applyTier(c, tierFor(c)); }
+let _noteTO;
+function centerNote(text, sub, color) {
+  const el = $('#centerMsg');
+  el.innerHTML = `<span style="color:${color || 'var(--sun)'}">${esc(text)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`;
+  el.style.opacity = 1; clearTimeout(_noteTO); _noteTO = setTimeout(() => el.style.opacity = 0, 2200);
+}
+
+/* ================= teams + capture the flag ================= */
+const TEAM_NAMES = ['BLUE', 'RED'], TEAM_COLORS = ['#2f8bff', '#ff3355'];
+const CTF = { flags: [], score: [0, 0], toWin: 3 };
+const isCTF = () => G.mode === 'ctf';
+function sameTeam(a, b) { return isCTF() && a && b && a !== b && a.team >= 0 && a.team === b.team; }
+function setTeam(c, team) { if (c.team === team) return; c.team = team; c.tag = retag(c); }
+function teamCounts(skip) { const n = [0, 0]; for (const c of G.chars) if (c !== skip && c.team >= 0) n[c.team]++; return n; }
+function smallerTeam(skip) { const n = teamCounts(skip); return n[0] <= n[1] ? 0 : 1; }
+function assignTeams() {
+  for (const c of G.chars) c.team = -1;
+  if (!isCTF()) { for (const c of G.chars) c.tag = retag(c); return; }
+  // people first so they split evenly, then bots balance the numbers
+  const order = G.chars.filter(c => !c.isBot).concat(G.chars.filter(c => c.isBot));
+  for (const c of order) { c.team = -1; setTeam(c, smallerTeam(c)); }
+}
+function ctfReset() {
+  CTF.score = [0, 0];
+  CTF.flags = FLAG_SPOTS.map((s, i) => ({ i, team: s.team, spot: s, state: 'home', carrier: null, x: s.x, y: 0.25, z: s.z, dropT: 0 }));
+  for (const s of FLAG_SPOTS) { s.mesh.visible = isCTF(); s.ring.visible = isCTF(); s.mesh.position.set(s.x, 0.25, s.z); s.mesh.rotation.set(0, 0, 0); }
+  $('#ctfBar').hidden = !isCTF();
+}
+const carrying = c => CTF.flags.find(f => f.state === 'carried' && f.carrier === c) || null;
+function returnFlag(f) { f.state = 'home'; f.carrier = null; f.x = f.spot.x; f.z = f.spot.z; f.y = 0.25; }
+function ctfAnnounce(text, team, good) {
+  // good: true when it helps the local player's team
+  const mine = G.player && G.player.team === team;
+  centerNote(text, '', TEAM_COLORS[team]); addFeedNote(text);
+  sCapture(good === undefined ? mine : good);
+  if (NET.mode === 'host') netSend({ t: 'ctf', m: text, team });
+}
+function ctfOnDeath(v, fell) {
+  if (!isCTF() || isClient()) return;
+  const f = carrying(v); if (!f) return;
+  if (fell || v.pos.y < -1) { returnFlag(f); ctfAnnounce(`${TEAM_NAMES[f.team]} flag returned`, f.team); }
+  else { f.state = 'dropped'; f.carrier = null; f.x = v.pos.x; f.z = v.pos.z; f.y = Math.max(0, v.pos.y) + 0.25; f.dropT = 15; ctfAnnounce(`${v.name} dropped the ${TEAM_NAMES[f.team]} flag`, v.team); }
+}
+function ctfStep(dt) {
+  for (const f of CTF.flags) {
+    if (f.state === 'carried') { const c = f.carrier; if (c) { f.x = c.pos.x; f.z = c.pos.z; f.y = c.pos.y; } }
+    else if (f.state === 'dropped') { f.dropT -= dt; if (f.dropT <= 0) { returnFlag(f); ctfAnnounce(`${TEAM_NAMES[f.team]} flag returned`, f.team); } }
+  }
+  for (const c of G.chars) {
+    if (!c.alive || c.team < 0 || c.protT > 0) continue;
+    for (const f of CTF.flags) {
+      if (f.state === 'carried') continue;
+      const d = Math.hypot(c.pos.x - f.x, c.pos.z - f.z); if (d > 1.5 || Math.abs(c.pos.y - f.y) > 2.2) continue;
+      if (f.team !== c.team && !carrying(c)) { f.state = 'carried'; f.carrier = c; ctfAnnounce(`${c.name} took the ${TEAM_NAMES[f.team]} flag!`, c.team); }
+      else if (f.team === c.team && f.state === 'dropped') { returnFlag(f); ctfAnnounce(`${c.name} returned the ${TEAM_NAMES[f.team]} flag`, c.team); }
+    }
+    const held = carrying(c);
+    if (held) for (const home of CTF.flags) {
+      if (home.team !== c.team || home.state !== 'home') continue;
+      if (Math.hypot(c.pos.x - home.spot.x, c.pos.z - home.spot.z) < 2) {
+        returnFlag(held); CTF.score[c.team]++; c.caps = (c.caps || 0) + 1;
+        ctfAnnounce(`${c.name} CAPTURED a flag for ${TEAM_NAMES[c.team]}!`, c.team);
+        if (CTF.score[c.team] >= CTF.toWin) { G.left = 0; }
+        break;
+      }
+    }
+  }
+}
+/* where a bot should head in capture the flag */
+function ctfGoal(b) {
+  const held = carrying(b);
+  const own = CTF.flags.filter(f => f.team === b.team), enemy = CTF.flags.filter(f => f.team !== b.team);
+  const near = (list, fn) => list.slice().sort((p, q) => fn(p) - fn(q))[0];
+  const dist = f => Math.hypot(f.x - b.pos.x, f.z - b.pos.z);
+  if (held) { const home = near(own.filter(f => f.state === 'home'), f => Math.hypot(f.spot.x - b.pos.x, f.spot.z - b.pos.z)) || own[0]; return { x: home.spot.x, z: home.spot.z }; }
+  const stolen = own.find(f => f.state === 'carried' && f.carrier && f.carrier.alive); if (stolen && Math.random() < 0.6) return { x: stolen.x, z: stolen.z };
+  const loose = own.find(f => f.state === 'dropped'); if (loose) return { x: loose.x, z: loose.z };
+  if (b.ai.role === 'def') { const f = own[b.ai.post % own.length]; return { x: f.spot.x + rand(-3, 3), z: f.spot.z + rand(-3, 3) }; }
+  const targ = near(enemy.filter(f => f.state !== 'carried'), dist); if (targ) return { x: targ.x, z: targ.z };
+  return null;
+}
+function ctfVisual(dt) {
+  if (!isCTF()) return;
+  for (const f of CTF.flags) {
+    const m = f.spot.mesh;
+    if (f.state === 'carried' && f.carrier) {
+      const c = f.carrier; m.visible = c.alive && !(c.isPlayer);
+      m.position.set(c.pos.x + Math.sin(c.yaw) * 0.35, c.pos.y + 0.6, c.pos.z + Math.cos(c.yaw) * 0.35); m.rotation.y = c.yaw;
+    } else { m.visible = true; m.position.set(f.x, f.y, f.z); m.rotation.y += dt * 0.8; }
+    m.userData.cloth.rotation.y = Math.sin(G.time * 4 + f.i) * 0.25;
+  }
+}
+
+/* ================= storm core (middle tower) ================= */
+const CORE_STATE = { ready: true, t: 0 };
+function coreReset() { CORE_STATE.ready = true; CORE_STATE.t = 0; }
+function coreStep(dt) {
+  if (!CORE_STATE.ready) { CORE_STATE.t -= dt; if (CORE_STATE.t <= 0) { CORE_STATE.ready = true; addFeedNote('⚡ The Storm Core is back on the middle tower'); if (NET.mode === 'host') netSend({ t: 'note', m: '⚡ The Storm Core is back on the middle tower' }); } return; }
+  for (const c of G.chars) {
+    if (!c.alive || Math.hypot(c.pos.x - CORE.x, c.pos.z - CORE.z) > 1.7 || c.pos.y > 2.5) continue;
+    CORE_STATE.ready = false; CORE_STATE.t = 35;
+    c.sh = 100; c.boostT = 15; c.tag.draw(Math.max(0, c.hp), c.sh); if (c.isPlayer) hudVitals();
+    const msg = `⚡ ${c.name} grabbed the Storm Core: full shield and +30% damage`;
+    addFeedNote(msg); if (NET.mode === 'host') netSend({ t: 'note', m: msg });
+    if (c.isPlayer) centerNote('STORM CORE', 'Full shield and +30% damage for 15 seconds', '#ffe14d');
+    if (c.puppet) netSendTo(c.id, { t: 'boost' });
+    break;
+  }
+}
+function coreVisual(dt) {
+  if (!CORE.mesh) return;
+  CORE.mesh.visible = CORE_STATE.ready;
+  CORE.mesh.rotation.y += dt * 1.5; CORE.cube.rotation.x += dt * 1.1;
+  CORE.mesh.position.y = 1.7 + Math.sin(G.time * 2) * 0.15;
+}
+
+/* ================= per-frame hooks ================= */
+let _tierT = 0;
+function modeStep(dt) {
+  for (const c of G.chars) if (c.boostT > 0) c.boostT -= dt;
+  if (isClient()) return;
+  if (isCTF()) ctfStep(dt);
+  coreStep(dt);
+  _tierT -= dt; if (_tierT <= 0) { _tierT = 0.3; for (const c of G.chars) checkTier(c); }
+}
+function modeVisual(dt) { ctfVisual(dt); coreVisual(dt); hudCTF(); }
+function hudCTF() {
+  if (!isCTF()) return;
+  const el = $('#ctfBar'); if (el.hidden) el.hidden = false;
+  const icon = team => CTF.flags.filter(f => f.team === team).map(f => `<i class="fl ${f.state}" style="--c:${TEAM_COLORS[team]}" title="${f.state}"></i>`).join('');
+  const html = `<span class="t b">BLUE ${CTF.score[0]}</span>${icon(0)}<span class="vs">FIRST TO ${CTF.toWin}</span>${icon(1)}<span class="t r">${CTF.score[1]} RED</span>`;
+  if (el._h !== html) { el._h = html; el.innerHTML = html; }
 }
 
 
@@ -3246,6 +3515,10 @@ function renderMain() {
     <h1>Fight above the storm.</h1>
     <p>Five towers rise out of a city that never ends. Glass mazes link the rooftops, the rain never stops, and the player with the most kills when the clock hits zero wins.</p>
     ${invite ? `<div class="invite-banner">You've been invited to a lobby. Pick your loadout, then join.</div>` : ''}
+    <div class="modes" role="group" aria-label="Game mode">
+      <button data-mode="ffa" class="${profile.settings.mode !== 'ctf' ? 'on' : ''}">Free-for-all<small>Most kills wins</small></button>
+      <button data-mode="ctf" class="${profile.settings.mode === 'ctf' ? 'on' : ''}">Capture the flag<small>Blue vs Red, first to 3 captures</small></button>
+    </div>
     <div class="row">
       ${invite ? `<button class="btn yellow big" id="btnJoin">Join lobby</button>` : `<button class="btn yellow big" id="btnQuick">Quick play</button>`}
       <button class="btn pink" id="btnPlay">Create lobby</button>
@@ -3287,6 +3560,7 @@ function renderMain() {
     </div>
   </div>`;
   drawFace();
+  document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { sUI(); profile.settings.mode = b.dataset.mode; saveProfile(); renderMain(); });
   $('#btnPlay').onclick = () => { sUI(); hostLobby(); };
   if ($('#btnJoin')) $('#btnJoin').onclick = () => { sUI(); joinLobby(invite.room, invite.b); };
   if ($('#btnQuick')) $('#btnQuick').onclick = () => { sUI(); quickPlay(); };
@@ -3338,7 +3612,8 @@ function drawFace() { const c = $('#facePrev'); if (!c) return; c.getContext('2d
 
 function renderLoadouts() {
   const lo = profile.loadouts[loTab];
-  let html = `<div class="lo-tabs">${profile.loadouts.map((l, i) => `<button data-lo="${i}" class="${i === loTab ? 'on' : ''}">${esc(l.name)}${i === profile.active ? '<span class="act">ACTIVE</span>' : ''}</button>`).join('')}</div>
+  let html = `<div class="invite-banner" style="background:var(--panel2);box-shadow:none;border:3px solid var(--line)">In matches everyone starts with the same Common guns. Kills during the match unlock better guns: Rare at ${TIER_KILLS[1]}, Epic at ${TIER_KILLS[2]}, Legendary at ${TIER_KILLS[3]}, Mythic at ${TIER_KILLS[4]}.</div>
+  <div class="lo-tabs">${profile.loadouts.map((l, i) => `<button data-lo="${i}" class="${i === loTab ? 'on' : ''}">${esc(l.name)}${i === profile.active ? '<span class="act">ACTIVE</span>' : ''}</button>`).join('')}</div>
   <div class="panel">
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:14px">
       <div class="field" style="min-width:0;flex:1 1 200px"><label for="loName">Loadout name</label><input id="loName" maxlength="18" value="${esc(lo.name)}"></div>
