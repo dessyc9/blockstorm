@@ -187,6 +187,12 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
 #loading .bar{width:220px;height:14px;border:3px solid #fff}
 #loading .bar i{display:block;height:100%;width:30%;background:var(--sun);animation:load 1s infinite alternate}
 @keyframes load{to{width:100%}}
+.invite{display:flex;gap:8px;margin:10px 0}
+.invite input{flex:1;min-width:0;background:#0b1024;border:3px solid var(--line);color:var(--sun);border-radius:6px;padding:8px 10px;font-family:var(--f-body);font-size:15px}
+.lobby-list{list-style:none;padding:0;margin:14px 0 0;display:flex;flex-direction:column;gap:6px;text-align:left}
+.lobby-list li{background:var(--panel2);border:2px solid var(--line);border-radius:6px;padding:8px 12px;display:flex;justify-content:space-between;gap:8px}
+.lobby-list li b{color:var(--sun);font-family:var(--f-display);font-size:9px;align-self:center}
+.invite-banner{background:var(--pink);color:#fff;border-radius:6px;padding:10px 14px;font-weight:700;margin-bottom:14px;box-shadow:inset 0 -4px 0 #b8226e}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;background:var(--lime);color:#06210f;font-weight:700;padding:10px 16px;border-radius:6px;box-shadow:inset 0 -4px 0 #1f9a37;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.on{opacity:1}
 
@@ -217,7 +223,7 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
   <div id="centerMsg"></div>
   <div id="spawnProt">SPAWN SHIELD ACTIVE</div>
   <div id="lowhp">LOW HEALTH</div>
-  <div id="hint">WASD move · SPACE jump · SHIFT sprint · F shove · R reload · 1-4 swap · TAB scores</div>
+  <div id="hint">WASD move · SPACE jump · SHIFT aim · F shove · R reload · 1-4 swap · TAB scores</div>
   <div id="vitals">
     <div class="vbar" id="shieldBar"><i class="ghost"></i><i class="f"></i><span><em>SHIELD</em><b>100</b></span></div>
     <div class="vbar" id="healthBar"><i class="ghost"></i><i class="f"></i><span><em>HEALTH</em><b>100</b></span></div>
@@ -249,7 +255,8 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
 <div class="overlay" id="pause" hidden>
   <div class="panel">
     <h2>PAUSED</h2>
-    <p class="muted">Click Resume to grab the mouse again.</p>
+    <p class="muted" id="pauseNote">Click Resume to grab the mouse again.</p>
+    <div id="pauseInvite" hidden><div class="invite"><input id="pauseLink" readonly aria-label="Invite link"><button class="btn small" data-copy="#pauseLink">Copy link</button></div></div>
     <div class="row">
       <button class="btn green big" id="btnResume">Resume</button>
       <button class="btn gray" id="btnQuit">Leave match</button>
@@ -262,6 +269,7 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
     <h2 id="endTitle">MATCH OVER</h2>
     <div id="podium"></div>
     <table class="sbt" id="endTable"></table>
+    <p class="muted" id="endWait" hidden>Waiting for the host to start the next match…</p>
     <div class="row">
       <button class="btn yellow big" id="btnAgain">Play again</button>
       <button class="btn gray" id="btnMenu">Menu</button>
@@ -269,7 +277,24 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
   </div>
 </div>
 
+<div class="overlay" id="lobby" hidden>
+  <div class="panel">
+    <h2 id="lobbyTitle">LOBBY</h2>
+    <p class="muted" id="lobbyStatus"></p>
+    <div id="lobbyInvite" hidden>
+      <div class="invite"><input id="inviteLink" readonly aria-label="Invite link"><button class="btn small" data-copy="#inviteLink">Copy link</button></div>
+      <p class="muted" style="font-size:14px">Send this link to your friends. Opening it puts them in this lobby, even after the match has started.</p>
+    </div>
+    <ul class="lobby-list" id="lobbyList"></ul>
+    <div class="row">
+      <button class="btn yellow big" id="btnLobbyStart" hidden>Start match</button>
+      <button class="btn gray" id="btnLobbyLeave">Leave</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
@@ -434,7 +459,8 @@ profile.settings = Object.assign({}, DEFAULT_SETTINGS, profile.settings || {});
 const saveProfile = () => store.set('profile', profile);
 
 let DAILY = makeDaily(dayKey());
-function gunDef(id) { if (!id) return null; return CATALOG.find(g => g.id === id) || DAILY.guns.find(g => g.id === id) || profile.custom[id] || null; }
+const NET_DEFS = {}; // gun definitions other players brought into an online match
+function gunDef(id) { if (!id) return null; return CATALOG.find(g => g.id === id) || DAILY.guns.find(g => g.id === id) || profile.custom[id] || NET_DEFS[id] || null; }
 function allGuns() { const list = CATALOG.slice(); for (const g of DAILY.guns) list.push(g); for (const id in profile.custom) if (!list.find(x => x.id === id)) list.push(profile.custom[id]); return list; }
 function claimGun(id) {
   const d = gunDef(id); if (!d) return;
@@ -1501,6 +1527,255 @@ function sUI() { if (!AU.ctx) return; osc(AU.sfx, { type: 'square', f: 660, f2: 
 function sFall(pos) { if (!AU.ctx || tooFar(pos, 60)) return; const out = outNode(pos); osc(out, { type: 'sine', f: 600, f2: 120, dur: 1.2, gain: 0.25 }); }
 
 
+/* ================= online play ================= */
+// Peer-to-peer: the host's browser runs the match (bots, damage, kills, timer).
+// Everyone else sends their own movement and hits to the host and draws what the host reports.
+const NET = { mode: 'off', peer: null, conns: new Map(), host: null, code: '', myId: '', sendT: 0, connected: false, joinTimer: null };
+const PEER_PREFIX = 'blockstorm-dc-';
+function netActive() { return NET.mode === 'host' || NET.mode === 'client'; }
+function isClient() { return NET.mode === 'client'; }
+function makeCode() { const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)]; return s; }
+function inviteLink() { return location.origin + location.pathname + '?join=' + NET.code; }
+function inviteCodeFromUrl() { try { const c = new URLSearchParams(location.search).get('join'); return c && /^[A-Z0-9]{4,8}$/i.test(c) ? c.toUpperCase() : null; } catch (e) { return null; } }
+function charById(id) { return G.chars.find(c => c.id === id) || null; }
+
+function netSend(m) {
+  if (NET.mode === 'host') { for (const [, info] of NET.conns) if (info.conn.open) info.conn.send(m); }
+  else if (NET.mode === 'client' && NET.host && NET.host.open) NET.host.send(m);
+}
+function netSendTo(id, m) { const info = NET.conns.get(id); if (info && info.conn.open) info.conn.send(m); }
+function netRelay(fromId, m) { for (const [pid, info] of NET.conns) if (pid !== fromId && info.conn.open) info.conn.send(m); }
+function netClose() {
+  clearTimeout(NET.joinTimer);
+  try { if (NET.peer) NET.peer.destroy(); } catch (e) { }
+  NET.peer = null; NET.host = null; NET.conns.clear(); NET.mode = 'off'; NET.connected = false;
+}
+function cleanGuns(list) {
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    const g = list && list[i];
+    if (!g || !g.def || typeof g.def.id !== 'string' || !TYPES[g.def.type]) { out.push(null); continue; }
+    const d = g.def;
+    const def = { id: String(d.id).slice(0, 40), name: String(d.name || 'Gun').slice(0, 24), type: d.type, r: clamp(d.r | 0, 0, 4),
+      c: (Array.isArray(d.c) ? d.c : []).slice(0, 3).map(x => /^#[0-9a-f]{6}$/i.test(x) ? x : '#888888'), m: {} };
+    while (def.c.length < 3) def.c.push('#888888');
+    for (const k of ['dmg', 'rpm', 'mag', 'reload', 'spin']) if (d.m && typeof d.m[k] === 'number') def.m[k] = clamp(d.m[k], 0.5, 1.3);
+    if (d.m && d.m.pellets) def.m.pellets = clamp(d.m.pellets | 0, 1, 10);
+    if (!gunDef(def.id)) NET_DEFS[def.id] = def;
+    out.push({ def: gunDef(def.id) || def, level: clamp(g.level | 0, 1, MAX_LEVEL) });
+  }
+  return out;
+}
+const gunsPayload = guns => guns.map(g => g ? { def: g.def, level: g.level } : null);
+
+/* ---------- lobby screen ---------- */
+function showLobby(title, status) {
+  $('#lobby').hidden = false; $('#lobbyTitle').textContent = title; $('#lobbyStatus').textContent = status || '';
+  $('#lobbyInvite').hidden = true; $('#btnLobbyStart').hidden = true; $('#lobbyList').innerHTML = '';
+}
+function renderLobby(names) {
+  if ($('#lobby').hidden) return;
+  $('#lobbyInvite').hidden = false; $('#inviteLink').value = inviteLink(); $('#lobbyTitle').textContent = 'LOBBY ' + NET.code;
+  $('#btnLobbyStart').hidden = NET.mode !== 'host';
+  $('#lobbyStatus').textContent = NET.mode === 'host' ? `Lobby ${NET.code} is open. Start when your friends are in. Bots fill the empty spots.` : `You're in lobby ${NET.code}. Waiting for the host to start…`;
+  $('#lobbyList').innerHTML = names.map((n, i) => `<li><span>${esc(n)}</span>${i === 0 ? '<b>HOST</b>' : ''}</li>`).join('');
+}
+function lobbyNames() { return [profile.name || 'Host'].concat([...NET.conns.values()].map(i => i.name)); }
+
+/* ---------- hosting ---------- */
+function hostLobby() {
+  audioInit();
+  if (typeof Peer === 'undefined') { toast('Online play is not available here. Starting a solo match.'); startMatch(); return; }
+  NET.code = makeCode(); NET.mode = 'host';
+  showLobby('HOSTING', 'Opening your lobby…');
+  const peer = new Peer(PEER_PREFIX + NET.code, { debug: 0 });
+  NET.peer = peer;
+  peer.on('open', id => { NET.myId = id; renderLobby(lobbyNames()); });
+  peer.on('connection', conn => {
+    conn.on('data', d => { try { hostOnData(conn, d); } catch (e) { console.warn(e); } });
+    conn.on('close', () => hostDrop(conn.peer));
+    conn.on('error', () => hostDrop(conn.peer));
+  });
+  peer.on('disconnected', () => { try { if (NET.mode === 'host') peer.reconnect(); } catch (e) { } });
+  peer.on('error', e => {
+    console.warn('peer', e.type);
+    if (e.type === 'unavailable-id') { netClose(); hostLobby(); return; }
+    if (e.type === 'peer-unavailable') return;
+    if (!NET.myId) { netClose(); $('#lobby').hidden = true; toast('Could not open an online lobby. Starting a solo match.'); startMatch(); }
+  });
+}
+function hostOnData(conn, m) {
+  if (!m || typeof m !== 'object') return;
+  const pid = conn.peer;
+  if (m.t === 'hello') {
+    if (NET.conns.has(pid)) return;
+    if (NET.conns.size >= 11) { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 500); return; }
+    const info = { conn, name: String(m.name || 'Player').replace(/[<>]/g, '').slice(0, 14) || 'Player', look: (m.look | 0) >>> 0, guns: cleanGuns(m.guns) };
+    NET.conns.set(pid, info);
+    conn.send({ t: 'welcome', code: NET.code });
+    if (G.state === 'play') {
+      // drop into the running match, replacing a bot
+      const ch = makePuppet(pid, info.name, info.look, info.guns); G.chars.push(ch);
+      const bots = G.chars.filter(c => c.ai);
+      if (bots.length && bots.length > Math.max(0, profile.settings.bots - NET.conns.size)) { const b = bots[bots.length - 1]; b.dispose(); G.chars.splice(G.chars.indexOf(b), 1); }
+      conn.send({ t: 'start', left: G.left });
+      sendRoster(); spawnChar(ch);
+      addFeedNote(`${info.name} joined`);
+    } else {
+      netSend({ t: 'lobby', names: lobbyNames() });
+      renderLobby(lobbyNames());
+    }
+    return;
+  }
+  if (G.state !== 'play') return;
+  const ch = charById(pid); if (!ch) return;
+  switch (m.t) {
+    case 'st': {
+      if (!ch.alive || m.life !== ch.life) return;
+      const n = k => (typeof m[k] === 'number' && isFinite(m[k])) ? m[k] : 0;
+      ch.netPos.set(clamp(n('x'), -400, 400), clamp(n('y'), -100, 40), clamp(n('z'), -400, 400)); ch.netYaw = n('yaw'); ch.pitch = clamp(n('p'), -1.6, 1.6);
+      ch.vel.set(n('vx'), n('vy'), n('vz'));
+      if (m.cur !== ch.cur && ch.weapons[m.cur]) { ch.cur = m.cur; ch.setGunModel(); }
+      break;
+    }
+    case 'hit': {
+      const v = charById(m.v); if (!v || !ch.alive) return;
+      const def = gunDef(m.d);
+      damage(v, clamp(+m.a || 0, 0, 260), ch, def, !!m.h, m.w ? String(m.w).slice(0, 12) : null);
+      break;
+    }
+    case 'fx': if (!ch.alive) return; m.id = pid; netRelay(pid, m); playFx(ch, m); break;
+    case 'pj': if (!ch.alive) return; m.id = pid; netRelay(pid, m); ghostProjectile(ch, m); break;
+    case 'shove': { const v = charById(m.v); if (v && ch.alive && v.pos.distanceTo(ch.pos) < 3.5) { applyShove(ch, v, +m.dx || 0, +m.dz || 0); ch.shoveAnim = 0.3; } break; }
+  }
+}
+function hostDrop(pid) {
+  const info = NET.conns.get(pid); if (!info) return;
+  NET.conns.delete(pid);
+  if (G.state === 'play' || G.state === 'end') {
+    const ch = charById(pid);
+    if (ch) { ch.dispose(); G.chars.splice(G.chars.indexOf(ch), 1); }
+    if (G.state === 'play' && G.chars.filter(c => c.ai).length < Math.max(0, profile.settings.bots - NET.conns.size)) { const b = makeBot(pick(BOT_NAMES)); G.chars.push(b); spawnChar(b); }
+    sendRoster(); addFeedNote(`${info.name} left`);
+  } else { netSend({ t: 'lobby', names: lobbyNames() }); renderLobby(lobbyNames()); }
+}
+function sendRoster() {
+  netSend({ t: 'roster', list: G.chars.map(c => ({ id: c.id, name: c.name, look: c.lookSeed, guns: gunsPayload(c.weapons.map(w => w ? { def: w.def, level: w.level } : null)) })) });
+}
+const r2 = v => Math.round(v * 100) / 100;
+function sendSnap() {
+  netSend({ t: 'snap', L: Math.max(0, G.left), c: G.chars.map(c => [c.id, r2(c.pos.x), r2(c.pos.y), r2(c.pos.z), r2(c.yaw), r2(c.pitch), c.cur, c.alive ? 1 : 0, Math.ceil(Math.max(0, c.hp)), Math.ceil(c.sh), c.kills, c.deaths, c.protT > 0 ? 1 : 0, r2(c.vel.x), r2(c.vel.z), c.best]) });
+}
+function netTick(dt) {
+  if (!netActive()) return;
+  NET.sendT -= dt; if (NET.sendT > 0) return; NET.sendT = 1 / 15;
+  if (NET.mode === 'host') sendSnap();
+  else if (G.player && G.player.alive) {
+    const p = G.player;
+    netSend({ t: 'st', x: r2(p.pos.x), y: r2(p.pos.y), z: r2(p.pos.z), yaw: r2(p.yaw), p: r2(p.pitch), cur: p.cur, vx: r2(p.vel.x), vy: r2(p.vel.y), vz: r2(p.vel.z), life: p.life });
+  }
+}
+function ghostProjectile(ch, m) {
+  const def = gunDef(m.d); if (!def || !TYPES[def.type].proj) return;
+  const w = ch.weapons.find(x => x && x.def.id === def.id) || makeWeapon(def, 1);
+  const V = a => new THREE.Vector3(+a[0] || 0, +a[1] || 0, +a[2] || 0);
+  spawnProjectile(ch, V(m.p), V(m.v), w, V(m.s || m.p), true);
+  sGun(def.type, ch.pos, def.r);
+}
+function addFeedNote(text) {
+  const d = document.createElement('div'); d.className = 'k'; d.innerHTML = `<span style="color:var(--sun)">${esc(text)}</span>`;
+  const f = $('#feed'); f.prepend(d); setTimeout(() => d.remove(), 5000);
+}
+
+/* ---------- joining ---------- */
+function joinLobby(code) {
+  audioInit();
+  if (typeof Peer === 'undefined') { toast('Online play is not available here.'); return; }
+  netClose();
+  NET.mode = 'client'; NET.code = code;
+  showLobby('JOINING', `Connecting to lobby ${code}…`);
+  const peer = new Peer({ debug: 0 }); NET.peer = peer;
+  const fail = msg => { if (NET.mode !== 'client') return; netClose(); quitToMenu(); toast(msg); };
+  NET.joinTimer = setTimeout(() => { if (!NET.connected) fail(`Couldn't reach lobby ${code}. The host may have closed it.`); }, 12000);
+  peer.on('open', id => {
+    NET.myId = id;
+    const conn = peer.connect(PEER_PREFIX + code, { reliable: true }); NET.host = conn;
+    conn.on('open', () => conn.send({ t: 'hello', name: profile.name || 'Player', look: profile.look, guns: gunsPayload(myLoadoutGuns()) }));
+    conn.on('data', d => { try { clientOnData(d); } catch (e) { console.warn(e); } });
+    conn.on('close', () => fail('The host left, so the lobby closed.'));
+    conn.on('error', () => fail('Lost the connection to the host.'));
+  });
+  peer.on('error', e => {
+    console.warn('peer', e.type);
+    if (e.type === 'peer-unavailable') fail(`Lobby ${code} doesn't exist anymore. Ask your friend for a new link.`);
+    else if (!NET.connected) fail('Could not connect to the online lobby service.');
+  });
+}
+function clientOnData(m) {
+  if (!m || typeof m !== 'object') return;
+  switch (m.t) {
+    case 'welcome': NET.connected = true; clearTimeout(NET.joinTimer); renderLobby([]); break;
+    case 'full': toast('That lobby is full.'); break;
+    case 'lobby': renderLobby(m.names || []); break;
+    case 'start': startMatch({ left: m.left }); break;
+    case 'roster': applyRoster(m.list || []); break;
+    case 'snap': applySnap(m); break;
+    case 'spawn': if (G.player && G.state === 'play') { spawnChar(G.player, { x: m.x, z: m.z, yaw: m.yaw, life: m.life }); } break;
+    case 'kill': {
+      const v = charById(m.v); if (!v || !v.alive) break;
+      killChar(v, m.k ? charById(m.k) : null, gunDef(m.d), !!m.h, m.w, !!m.f);
+      break;
+    }
+    case 'hurt': if (G.player && G.player.alive) { hurtFX(m.from ? charById(m.from) : null); sHurt(); } break;
+    case 'hm': if (m.k) { hitMarker(true, !!m.h); sHit(true, !!m.h); } break;
+    case 'fx': playFx(charById(m.id), m); break;
+    case 'pj': { const c = charById(m.id); if (c) ghostProjectile(c, m); break; }
+    case 'knock': if (G.player && G.player.alive && Array.isArray(m.v)) {
+      const p = G.player; if (m.a) { p.vel.x += m.v[0]; p.vel.z += m.v[2]; p.vel.y = Math.max(p.vel.y, m.v[1]); } else p.vel.set(m.v[0], m.v[1], m.v[2]);
+      p.onGround = false; p.knockT = m.k || 0.5;
+    } break;
+    case 'end': if (G.state === 'play') endMatch(); break;
+  }
+}
+function applyRoster(list) {
+  if (G.state !== 'play' && G.state !== 'end') return;
+  const ids = new Set(list.map(e => e.id));
+  for (const c of G.chars.slice()) if (!c.isPlayer && !ids.has(c.id)) { c.dispose(); G.chars.splice(G.chars.indexOf(c), 1); }
+  for (const e of list) {
+    if (e.id === NET.myId || charById(e.id)) continue;
+    G.chars.push(makePuppet(e.id, String(e.name || 'Player').slice(0, 14), (e.look | 0) >>> 0, cleanGuns(e.guns)));
+  }
+  G.boardT = 0;
+}
+function applySnap(m) {
+  if (G.state !== 'play') return;
+  G.left = +m.L || 0;
+  for (const e of m.c || []) {
+    const c = charById(e[0]); if (!c) continue;
+    const [, x, y, z, yaw, pitch, cur, alive, hp, sh, kills, deaths, prot, vx, vz, best] = e;
+    c.kills = kills; c.deaths = deaths; c.best = best;
+    if (c === G.player) {
+      if (c.alive && (c.hp !== hp || Math.ceil(c.sh) !== sh)) { c.hp = hp; c.sh = sh; hudVitals(); }
+      continue;
+    }
+    c.netPos.set(x, y, z); c.netYaw = yaw; c.pitch = pitch; c.vel.x = vx; c.vel.z = vz;
+    if (cur !== c.cur && c.weapons[cur]) { c.cur = cur; c.setGunModel(); }
+    if (alive && !c.alive) { c.alive = true; c.pos.set(x, y, z); c.yaw = yaw; }
+    else if (!alive && c.alive) { c.alive = false; c.model.root.visible = false; if (c.beam) c.beam.visible = false; }
+    if (c.hp !== hp || Math.round(c.sh) !== sh) { c.hp = hp; c.sh = sh; c.tag.draw(hp, sh); }
+    c.protT = prot ? 0.2 : 0;
+  }
+}
+
+/* copy buttons */
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-copy]'); if (!b) return;
+  const inp = $(b.dataset.copy); const text = inp.value;
+  const done = () => { b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy link', 1400); };
+  try { navigator.clipboard.writeText(text).then(done, () => { inp.select(); }); } catch (err) { inp.select(); }
+});
+
+
 /* ================= engine + match ================= */
 let renderer, scene, camera, vmScene, vmCam, vmFlash, vmFlashLight;
 const EYE = 1.95, RAD = 0.42, GRAV = 24, JUMP = 8.4, SPEED = 7.8;
@@ -1600,7 +1875,8 @@ function makeWeapon(def, level) {
   return { def, st, ammo: st.mag, reloadT: 0, cd: 0, spin: 0, level };
 }
 class Char {
-  constructor(name, lookSeed, isPlayer, guns) {
+  constructor(name, lookSeed, isPlayer, guns, id) {
+    this.id = id || ('c' + Math.random().toString(36).slice(2, 9)); this.lookSeed = lookSeed; this.life = 0;
     this.name = name; this.isPlayer = isPlayer; this.look = makeLook(lookSeed);
     this.pos = new THREE.Vector3(); this.vel = new THREE.Vector3(); this.yaw = 0; this.pitch = 0;
     this.hp = 100; this.sh = 100; this.alive = false; this.kills = 0; this.deaths = 0; this.streak = 0; this.best = 0;
@@ -1752,10 +2028,13 @@ function fire(ch, aimDir, origin, extraSpread = 0) {
     spreadDir(aimDir, spread, _sd);
     // projectile starts at the eye line so it goes where the crosshair points
     const start = origin.clone().addScaledVector(_sd, 0.6);
-    spawnProjectile(ch, start, _sd.clone().multiplyScalar(st.proj.speed), w, mz.clone());
+    const vel = _sd.clone().multiplyScalar(st.proj.speed);
+    spawnProjectile(ch, start, vel, w, mz.clone());
     if (!ch.isPlayer) flashAt(mz, trim, 0.9, 0.06);
+    if (netActive() && !ch.puppet) netSend({ t: 'pj', id: ch.id, d: def.id, p: v3(start), v: v3(vel), s: v3(mz) });
     return;
   }
+  const fxEnds = [];
   for (let p = 0; p < st.pellets; p++) {
     spreadDir(aimDir, spread, _sd);
     const maxT = st.range * 2;
@@ -1778,8 +2057,28 @@ function fire(ch, aimDir, origin, extraSpread = 0) {
     if (st.beam) drawBeam(ch, mz, _hitp, trim);
     else if (st.laserTrail) tracer(mz, _hitp, trim, st.type === 'rail' ? 0.09 : 0.05, st.type === 'rail' ? 0.35 : 0.1);
     else if (p < 3 && (Math.random() < 0.7 || ch.isPlayer)) tracer(mz, _hitp, def.r >= 3 ? trim : '#ffe7a0', 0.03, 0.06);
+    if (p < 3) fxEnds.push(v3(_hitp));
   }
   if (!ch.isPlayer && !st.beam) flashAt(mz, '#ffd27a', st.type === 'shotgun' ? 1.4 : 0.9, 0.05);
+  if (netActive() && !ch.puppet) netSend({ t: 'fx', id: ch.id, d: def.id, b: fxEnds });
+}
+function v3(v) { return [Math.round(v.x * 100) / 100, Math.round(v.y * 100) / 100, Math.round(v.z * 100) / 100]; }
+/* draw a shot fired by someone whose game runs on another computer */
+function playFx(ch, m) {
+  const def = gunDef(m.d); if (!ch || !def || !ch.alive) return;
+  const st = TYPES[def.type], trim = def.c[2];
+  const mz = muzzleWorld(ch, new THREE.Vector3());
+  ch.lastShotT = G.time;
+  G.noise.push({ x: ch.pos.x, z: ch.pos.z, t: G.time, c: ch });
+  if (st.beam) { if (Math.random() < 0.5) sGun('laser', ch.pos); } else sGun(def.type, ch.pos, def.r);
+  for (const b of (m.b || []).slice(0, 3)) {
+    const e = new THREE.Vector3(b[0], b[1], b[2]);
+    if (st.beam) drawBeam(ch, mz, e, trim);
+    else if (st.laserTrail) tracer(mz, e, trim, def.type === 'rail' ? 0.09 : 0.05, def.type === 'rail' ? 0.35 : 0.1);
+    else tracer(mz, e, def.r >= 3 ? trim : '#ffe7a0', 0.03, 0.06);
+    burst(e, ['#ffffff', '#c8d0e0', trim], 2, 2.5, 0.08, 0.3);
+  }
+  if (!st.beam) flashAt(mz, '#ffd27a', def.type === 'shotgun' ? 1.4 : 0.9, 0.05);
 }
 function drawBeam(ch, a, b, color) {
   if (!ch.beam) {
@@ -1821,13 +2120,13 @@ function updateWeapon(ch, held, pressed, aimDir, origin, dt, extraSpread = 0) {
 }
 
 /* ---------- projectiles ---------- */
-function spawnProjectile(ch, pos, vel, w, visualStart) {
+function spawnProjectile(ch, pos, vel, w, visualStart, ghost = false) {
   const st = w.st, col = w.def.r >= 2 ? w.def.c[2] : RARITIES[w.def.r].color;
   const m = new THREE.Mesh(_unitBox, glowMat(col)); m.scale.setScalar(st.proj.size);
   const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, color: col, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
   glow.scale.setScalar(st.type === 'launcher' ? 3 : 1.6); glow.scale.divideScalar(st.proj.size); m.add(glow);
   m.position.copy(visualStart); scene.add(m);
-  G.proj.push({ ch, pos, vel, w, st, def: w.def, m, life: 4, col, vis: visualStart, trailT: 0 });
+  G.proj.push({ ch, pos, vel, w, st, def: w.def, m, life: 4, col, vis: visualStart, trailT: 0, ghost });
 }
 const _pd = new THREE.Vector3();
 function updateProjectiles(dt) {
@@ -1856,6 +2155,7 @@ function explode(p, at, victim) {
   burst(at, big ? ['#ffd21f', '#ff7a2b', '#ff3355', p.col, '#ffffff'] : [p.col, '#ffffff'], big ? 34 : 10, big ? 9 : 4, big ? 0.22 : 0.12, big ? 0.9 : 0.5);
   if (big) { sExplode(at); if (p.ch.isPlayer || at.distanceTo(camera.position) < 14) G.shake = Math.max(G.shake, 0.6 * (1 - Math.min(1, at.distanceTo(camera.position) / 16)) + (p.ch.isPlayer ? 0.1 : 0)); }
   else sGun('plasma', at);
+  if (p.ghost) return; // the shooter's own game deals this damage
   if (victim) damage(victim.c, st.dmg * (victim.head ? st.head : 1), p.ch, p.def, victim.head);
   for (const c of G.chars) {
     if (!c.alive || (victim && c === victim.c)) continue;
@@ -1866,13 +2166,27 @@ function explode(p, at, victim) {
     const self = c === p.ch;
     if (!losClear(at, new THREE.Vector3(c.pos.x, c.pos.y + 1, c.pos.z))) continue;
     damage(c, base * (self ? 0.3 : 1), p.ch, p.def, false);
-    if (big) { const dx = c.pos.x - at.x, dz = c.pos.z - at.z, dl = Math.hypot(dx, dz) || 1; c.vel.x += dx / dl * 9 * k; c.vel.z += dz / dl * 9 * k; c.vel.y = Math.max(c.vel.y, 5 * k + 1); c.onGround = false; c.knockT = 0.35; }
+    if (big) { const dx = c.pos.x - at.x, dz = c.pos.z - at.z, dl = Math.hypot(dx, dz) || 1; knock(c, dx / dl * 9 * k, 5 * k + 1, dz / dl * 9 * k, 0.35, true); }
   }
 }
 
 /* ---------- damage / death / respawn ---------- */
+/* push someone; if their game runs on another computer, tell that computer */
+function knock(c, vx, vy, vz, t, add) {
+  if (c.puppet) { if (NET.mode === 'host') netSendTo(c.id, { t: 'knock', v: [vx, vy, vz], k: t, a: add ? 1 : 0 }); return; }
+  if (add) { c.vel.x += vx; c.vel.z += vz; c.vel.y = Math.max(c.vel.y, vy); } else { c.vel.x = vx; c.vel.z = vz; c.vel.y = vy; }
+  c.onGround = false; c.knockT = t;
+}
 function damage(v, amount, attacker, def, head, wname) {
   if (!v.alive || v.protT > 0 || G.state !== 'play') return;
+  if (isClient()) {
+    // the host decides damage; report hits made by this player
+    if (attacker === G.player) {
+      netSend({ t: 'hit', v: v.id, a: Math.round(amount), h: head ? 1 : 0, d: def ? def.id : null, w: wname || null });
+      if (v !== G.player) { hitMarker(false, head); sHit(false, head); }
+    }
+    return;
+  }
   amount = Math.max(1, Math.round(amount));
   const fromSh = Math.min(v.sh, amount); v.sh -= fromSh; v.hp -= amount - fromSh;
   v.lastDmgT = G.time;
@@ -1880,6 +2194,10 @@ function damage(v, amount, attacker, def, head, wname) {
   v.tag.draw(Math.max(0, v.hp), v.sh);
   if (v.isPlayer) { hudVitals(); hurtFX(attacker); sHurt(); }
   if (attacker && attacker.isPlayer && attacker !== v) { hitMarker(v.hp <= 0, head); sHit(v.hp <= 0, head); }
+  if (NET.mode === 'host') {
+    if (attacker && attacker.puppet && attacker !== v) netSendTo(attacker.id, { t: 'hm', k: v.hp <= 0 ? 1 : 0, h: head ? 1 : 0 });
+    if (v.puppet) netSendTo(v.id, { t: 'hurt', from: attacker ? attacker.id : null });
+  }
   if (!v.isPlayer && attacker && attacker !== v && v.ai) botAlert(v, attacker);
   if (v.hp <= 0) killChar(v, attacker === v ? null : attacker, def, head, wname);
 }
@@ -1895,6 +2213,7 @@ function killChar(v, killer, def, head, wname, fell) {
   addFeed(killer, v, def, head, wname, fell);
   if (v.isPlayer) playerDied(killer, def, fell);
   G.boardT = 0;
+  if (NET.mode === 'host') netSend({ t: 'kill', v: v.id, k: killer ? killer.id : null, d: def ? def.id : null, h: head ? 1 : 0, w: wname || null, f: fell ? 1 : 0 });
 }
 function pickSpawn(ch) {
   let best = null, bs = -1;
@@ -1906,9 +2225,13 @@ function pickSpawn(ch) {
   }
   return best;
 }
-function spawnChar(ch) {
-  const s = pickSpawn(ch);
-  ch.pos.set(s.x + (Math.random() - 0.5), 0, s.z + (Math.random() - 0.5)); ch.vel.set(0, 0, 0);
+function spawnChar(ch, at) {
+  const s = at || pickSpawn(ch);
+  if (at) ch.pos.set(at.x, 0, at.z); else ch.pos.set(s.x + (Math.random() - 0.5), 0, s.z + (Math.random() - 0.5));
+  ch.vel.set(0, 0, 0);
+  if (at && at.life) ch.life = at.life; else ch.life++;
+  if (ch.netPos) ch.netPos.copy(ch.pos);
+  if (NET.mode === 'host' && ch.puppet) netSendTo(ch.id, { t: 'spawn', x: ch.pos.x, z: ch.pos.z, yaw: s.yaw, life: ch.life });
   ch.yaw = s.yaw; ch.pitch = 0; ch.hp = 100; ch.sh = 100; ch.alive = true; ch.protT = 2.2; ch.onGround = true; ch.knockT = 0;
   for (const w of ch.weapons) if (w) { w.ammo = w.st.mag; w.reloadT = 0; w.cd = 0; w.spin = 0; }
   ch.cur = ch.weapons.findIndex(w => w); ch.setGunModel();
@@ -1933,10 +2256,16 @@ function tryShove(ch) {
   if (!best) return false;
   const dx = best.pos.x - ch.pos.x, dz = best.pos.z - ch.pos.z, d = Math.hypot(dx, dz) || 1;
   const fx = (dx / d) * 0.5 + f.x * 0.5, fz = (dz / d) * 0.5 + f.z * 0.5, fl = Math.hypot(fx, fz) || 1;
-  best.vel.x = fx / fl * 15; best.vel.z = fz / fl * 15; best.vel.y = 6.8; best.onGround = false; best.knockT = 0.65;
-  damage(best, 8, ch, null, false, 'Shove');
   burst(new THREE.Vector3(best.pos.x, best.pos.y + 1.2, best.pos.z), ['#ffffff', '#ffd21f'], 8, 4, 0.1, 0.4);
+  if (isClient()) { netSend({ t: 'shove', v: best.id, dx: fx / fl, dz: fz / fl }); return true; }
+  applyShove(ch, best, fx / fl, fz / fl);
   return true;
+}
+function applyShove(ch, v, dx, dz) {
+  if (!v.alive || v.protT > 0) return;
+  const L = Math.hypot(dx, dz) || 1;
+  knock(v, dx / L * 15, 6.8, dz / L * 15, 0.65, false);
+  damage(v, 8, ch, null, false, 'Shove');
 }
 
 /* ---------- bots ---------- */
@@ -2134,7 +2463,7 @@ function updatePlayer(dt) {
     camera.position.y += dt * 0.8;
     const k = p.killer && p.killer.alive ? p.killer : null;
     if (k) { const e = k.eye(); const dx = e.x - camera.position.x, dz = e.z - camera.position.z; const yaw = Math.atan2(-dx, -dz); const pitch = Math.atan2(e.y - camera.position.y, Math.hypot(dx, dz)); camera.rotation.y += angDiff(camera.rotation.y, yaw) * Math.min(1, dt * 3); camera.rotation.x += (pitch - camera.rotation.x) * Math.min(1, dt * 3); }
-    if (p.respawnT <= 0) spawnChar(p);
+    if (p.respawnT <= 0 && !isClient()) spawnChar(p);
     return;
   }
   const K = G.keys;
@@ -2142,10 +2471,11 @@ function updatePlayer(dt) {
   const L = Math.hypot(fx, sx) || 1; fx /= L; sx /= L;
   const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
   const wx = -sy * fx + cy * sx, wz = -cy * fx - sy * sx;
-  const sprint = K.ShiftLeft || K.ShiftRight;
-  moveChar(p, wx, wz, sprint && fx > 0 && !G.mouse.r, K.Space, dt);
+  // Shift aims; running forward is automatically a sprint when not aiming
+  const aimKey = !!(K.ShiftLeft || K.ShiftRight);
+  moveChar(p, wx, wz, fx > 0 && !aimKey, K.Space, dt);
   // ads
-  const wantAds = G.mouse.r && p.w && p.w.reloadT <= 0 && p.switchT <= 0;
+  const wantAds = aimKey && p.w && p.w.reloadT <= 0 && p.switchT <= 0;
   G.ads += ((wantAds ? 1 : 0) - G.ads) * Math.min(1, dt * 14);
   if (G.adsHold > 0) G.adsHold -= dt;
   // camera
@@ -2173,7 +2503,7 @@ function updatePlayer(dt) {
 }
 function playerDied(killer, def, fell) {
   const p = G.player; p.killer = killer;
-  $('#death').style.display = 'flex';
+  $('#death').style.display = 'flex'; $('#death h2').textContent = 'ELIMINATED';
   $('#deathBy').innerHTML = killer ? `${fell ? 'Knocked off the tower by' : 'Taken down by'} <b style="color:var(--sun)">${esc(killer.name)}</b>${def && !fell ? ` · <span style="color:${RARITIES[def.r].color}">${esc(def.name)}</span>` : ''}` : (fell ? 'You fell off the tower' : 'Eliminated');
   G.ads = 0; camera.fov = profile.settings.fov; camera.updateProjectionMatrix();
   $('#scope').style.display = 'none';
@@ -2200,33 +2530,59 @@ function animChar(ch, dt) {
 }
 
 /* ---------- match flow ---------- */
-function startMatch() {
-  audioInit();
-  for (const c of G.chars) c.dispose();
-  for (const p of G.proj) scene.remove(p.m);
-  for (const w of (G.player ? G.player.weapons : [])) if (w && w.vm) vmScene.remove(w.vm);
-  G.chars = []; G.proj = []; G.noise = [];
+function myLoadoutGuns() {
   const lo = profile.loadouts[profile.active];
   let guns = SLOTS.map(s => { const id = lo.guns[s.id]; const d = gunDef(id); return d && profile.owned[id] ? { def: d, level: profile.owned[id].level } : null; });
   if (!guns.some(g => g)) guns = [{ def: gunDef('block_ar'), level: 1 }, { def: gunDef('pocket_pop'), level: 1 }, { def: gunDef('long_plank'), level: 1 }, null];
-  const p = new Char(profile.name || 'You', profile.look, true, guns);
-  G.player = p; G.chars.push(p); buildViewmodels(p);
-  const names = BOT_NAMES.slice().sort(() => Math.random() - 0.5);
+  return guns;
+}
+function makeBot(name) {
   const r = Math.random;
-  for (let i = 0; i < profile.settings.bots; i++) {
-    const b = new Char(names[i % names.length], Math.floor(r() * 1e9), false, makeBotLoadout(r));
-    b.ai = { scanT: Math.random() * 0.3, reactT: 0, errT: 0, strafeT: 0, switchCD: 0, stuckT: 1.4, repathT: 0, path: null, pi: 0, goal: null, target: null, ey: 0, ep: 0, strafe: 1 };
-    G.chars.push(b);
-  }
-  for (const c of G.chars) spawnChar(c);
-  G.time = 0; G.left = profile.settings.minutes * 60; G.lastSec = -1; G.state = 'play'; G.paused = false;
+  const b = new Char(name, Math.floor(r() * 1e9), false, makeBotLoadout(r), 'b' + Math.random().toString(36).slice(2, 8));
+  b.ai = { scanT: Math.random() * 0.3, reactT: 0, errT: 0, strafeT: 0, switchCD: 0, stuckT: 1.4, repathT: 0, path: null, pi: 0, goal: null, target: null, ey: 0, ep: 0, strafe: 1 };
+  return b;
+}
+function makePuppet(id, name, look, guns) {
+  const c = new Char(name, look, false, guns, id);
+  c.puppet = true; c.netPos = new THREE.Vector3(); c.model.root.visible = false;
+  return c;
+}
+function clearMatch() {
+  for (const c of G.chars) c.dispose();
+  for (const p of G.proj) scene.remove(p.m);
+  for (const w of (G.player ? G.player.weapons : [])) if (w && w.vm) vmScene.remove(w.vm);
+  G.chars = []; G.proj = []; G.noise = []; G.player = null;
+}
+function startMatch(opts = {}) {
+  audioInit();
+  clearMatch();
+  const client = isClient();
+  const p = new Char(profile.name || 'You', profile.look, true, myLoadoutGuns(), netActive() ? NET.myId : 'me');
+  G.player = p; G.chars.push(p); buildViewmodels(p);
+  G.time = 0; G.lastSec = -1; G.state = 'play'; G.paused = false;
   G.nextBolt = 3; G.ads = 0; G.hintT = 9;
-  $('#menu').hidden = true; $('#endScreen').hidden = true; $('#pause').hidden = true; $('#hud').hidden = false;
+  $('#menu').hidden = true; $('#endScreen').hidden = true; $('#pause').hidden = true; $('#lobby').hidden = true; $('#hud').hidden = false;
   $('#feed').innerHTML = ''; $('#hint').style.opacity = 1;
+  if (client) {
+    // wait for the host to place us
+    G.left = opts.left || 300;
+    p.alive = false; p.respawnT = 0;
+    $('#death').style.display = 'flex'; $('#death h2').textContent = 'JOINING'; $('#deathBy').textContent = 'Dropping you onto a tower…'; $('#deathCd').textContent = '';
+  } else {
+    G.left = profile.settings.minutes * 60;
+    if (NET.mode === 'host') for (const [pid, info] of NET.conns) G.chars.push(makePuppet(pid, info.name, info.look, info.guns));
+    const names = BOT_NAMES.slice().sort(() => Math.random() - 0.5);
+    const humans = NET.mode === 'host' ? NET.conns.size : 0;
+    for (let i = 0; i < Math.max(0, profile.settings.bots - humans); i++) G.chars.push(makeBot(names[i % names.length]));
+    if (NET.mode === 'host') { netSend({ t: 'start', left: G.left }); sendRoster(); }
+    for (const c of G.chars) spawnChar(c);
+  }
   buildSlotsHud(); hudVitals(); hudWeapon(); hudBoard(); buildCrosshair();
   lockPointer();
 }
 function endMatch() {
+  if (NET.mode === 'host') { sendSnap(); netSend({ t: 'end' }); }
+  $('#btnAgain').hidden = isClient(); $('#endWait').hidden = !isClient();
   G.state = 'end';
   if (document.pointerLockElement) document.exitPointerLock();
   const sorted = G.chars.slice().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
@@ -2244,12 +2600,11 @@ function scoreTable(sorted) {
 }
 function quitToMenu() {
   G.state = 'menu'; G.paused = false;
+  netClose();
   if (document.pointerLockElement) document.exitPointerLock();
-  for (const c of G.chars) c.dispose(); G.chars = [];
-  for (const p of G.proj) scene.remove(p.m); G.proj = [];
-  if (G.player) for (const w of G.player.weapons) if (w && w.vm) vmScene.remove(w.vm);
-  G.player = null;
-  $('#hud').hidden = true; $('#pause').hidden = true; $('#endScreen').hidden = true; $('#menu').hidden = false;
+  clearMatch();
+  $('#death h2').textContent = 'ELIMINATED';
+  $('#hud').hidden = true; $('#pause').hidden = true; $('#endScreen').hidden = true; $('#lobby').hidden = true; $('#menu').hidden = false;
   camera.fov = 70; camera.updateProjectionMatrix();
   showScreen('main');
 }
@@ -2264,6 +2619,9 @@ function setPaused(v) {
   if (G.state !== 'play') return;
   G.paused = v; $('#pause').hidden = !v;
   G.mouse.l = G.mouse.r = false; G.keys = {};
+  $('#pauseInvite').hidden = !netActive();
+  $('#pauseNote').textContent = netActive() ? 'The match keeps going while you are paused.' : 'Click Resume to grab the mouse again.';
+  if (netActive()) $('#pauseLink').value = inviteLink();
 }
 
 /* ---------- weather ---------- */
@@ -2369,7 +2727,7 @@ function hudBoard() {
   const sorted = G.chars.slice().sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
   const top = sorted.slice(0, 8); if (!top.includes(G.player)) top[7] = G.player;
   $('#board').innerHTML = top.map(c => `<div class="r ${c.isPlayer ? 'me' : ''}"><span>${sorted.indexOf(c) + 1}</span><span class="n">${esc(c.name)}</span><b>${c.kills}</b></div>`).join('');
-  $('#mykills').textContent = `${G.player.kills} KILLS · LEADER ${sorted[0].kills}`;
+  $('#mykills').textContent = (netActive() ? `LOBBY ${NET.code} · ` : '') + `${G.player.kills} KILLS · LEADER ${sorted[0].kills}`;
   if ($('#tabboard').style.display === 'block') $('#tabTable').innerHTML = scoreTable(sorted);
 }
 function drawMinimap() {
@@ -2405,39 +2763,64 @@ function updateHud(dt) {
 
 /* ================= main loop ================= */
 const clock = new THREE.Clock();
-function frame() {
-  requestAnimationFrame(frame);
-  let dt = Math.min(0.05, clock.getDelta());
-  if (G.state === 'play' && !G.paused) {
-    G.time += dt; G.left -= dt;
-    updatePlayer(dt);
-    for (const c of G.chars) {
-      if (c.isPlayer) continue;
-      if (!c.alive) { c.respawnT -= dt; if (c.respawnT <= 0) spawnChar(c); continue; }
-      updateBot(c, dt);
-    }
-    for (const c of G.chars) {
-      if (!c.alive) continue;
+function updatePuppet(c, dt) {
+  const ox = c.pos.x, oz = c.pos.z;
+  if (c.pos.distanceTo(c.netPos) > 8) c.pos.copy(c.netPos); else c.pos.lerp(c.netPos, Math.min(1, dt * 14));
+  if (c.netYaw !== undefined) c.yaw += angDiff(c.yaw, c.netYaw) * Math.min(1, dt * 14);
+  const moved = Math.hypot(c.pos.x - ox, c.pos.z - oz);
+  c.walk += moved * 1.7; c.onGround = Math.abs(c.netPos.y - c.pos.y) < 0.05;
+  c.stepDist += moved;
+  if (c.stepDist > 2.3 && c.pos.y > -0.2) { c.stepDist = 0; sStep(c.pos.y < 0.05 && inBridge(c.pos.x, c.pos.z) ? 'glass' : 'concrete', c.pos); }
+  if (c.beamT > 0) { c.beamT -= dt; if (c.beamT <= 0 && c.beam) c.beam.visible = false; }
+}
+function step(dt) {
+  G.time += dt; if (!isClient()) G.left -= dt;
+  updatePlayer(dt);
+  for (const c of G.chars) {
+    if (c.isPlayer) continue;
+    if (c.puppet && c.alive) { updatePuppet(c, dt); continue; }
+    if (!c.alive) { if (!isClient()) { c.respawnT -= dt; if (c.respawnT <= 0) spawnChar(c); } continue; }
+    updateBot(c, dt);
+  }
+  for (const c of G.chars) {
+    if (!c.alive) continue;
+    if (!isClient()) {
       // shield slowly recharges when out of combat
       if (G.time - c.lastDmgT > 6 && c.sh < 100) { c.sh = Math.min(100, c.sh + 14 * dt); if (!c.isPlayer && Math.random() < 0.1) c.tag.draw(c.hp, c.sh); }
       if (c.pos.y < -14) {
         const k = c.lastAttacker && G.time - c.lastAttackerT < 8 ? c.lastAttacker : null;
         sFall(c.pos); killChar(c, k, null, false, null, true);
+        continue;
       }
-      animChar(c, dt);
     }
-    updateProjectiles(dt);
+    animChar(c, dt);
+  }
+  updateProjectiles(dt);
+  netTick(dt);
+  G.noise = G.noise.filter(n => G.time - n.t < 4);
+  if (G.left <= 0 && !isClient()) endMatch();
+}
+// a hidden host tab gets no animation frames, so keep the match running on a timer
+let _hiddenLast = performance.now();
+setInterval(() => {
+  const now = performance.now(), dt = Math.min(0.1, (now - _hiddenLast) / 1000); _hiddenLast = now;
+  if (document.hidden && netActive() && G.state === 'play') step(dt);
+}, 33);
+function frame() {
+  requestAnimationFrame(frame);
+  let dt = Math.min(0.05, clock.getDelta());
+  _hiddenLast = performance.now();
+  if (G.state === 'play' && (!G.paused || netActive())) {
+    step(dt);
     updateViewmodel(dt);
     updateHud(dt);
-    G.noise = G.noise.filter(n => G.time - n.t < 4);
-    if (G.left <= 0) endMatch();
   } else if (G.state === 'menu' || G.state === 'end') {
     // slow orbit over the arena behind the menu
     G.menuT += dt * 0.05; G.time += dt;
     const r = 112; camera.position.set(Math.cos(G.menuT) * r, 26 + Math.sin(G.menuT * 0.7) * 5, Math.sin(G.menuT) * r);
     camera.lookAt(0, -6, 0);
   }
-  if (G.state !== 'play' || !G.paused) { updateWeather(dt); updateFX(dt); updateRain(dt, camera, profile.settings.quality === 0 ? 0.5 : 1); }
+  if (G.state !== 'play' || !G.paused || netActive()) { updateWeather(dt); updateFX(dt); updateRain(dt, camera, profile.settings.quality === 0 ? 0.5 : 1); }
   _listenerPos.copy(camera.position); updateListener(camera);
   renderer.clear(); renderer.render(scene, camera);
   if (G.state === 'play' && G.player) { renderer.clearDepth(); renderer.render(vmScene, vmCam); }
@@ -2467,7 +2850,6 @@ function bindInput() {
     if (G.paused) return;
     if (!G.noLock && document.pointerLockElement !== cv) { lockPointer(); return; }
     if (e.button === 0) { G.mouse.l = true; G.pressBuf = 0.18; }
-    if (e.button === 2) G.mouse.r = true;
   });
   addEventListener('mouseup', e => { if (e.button === 0) G.mouse.l = false; if (e.button === 2) G.mouse.r = false; });
   cv.addEventListener('contextmenu', e => e.preventDefault());
@@ -2488,7 +2870,9 @@ function bindInput() {
   document.addEventListener('pointerlockerror', () => { G.noLock = true; });
   $('#btnResume').onclick = () => { if (G.noLock) setPaused(false); else lockPointer(); setTimeout(() => { if (G.noLock) setPaused(false); }, 250); };
   $('#btnQuit').onclick = quitToMenu;
-  $('#btnAgain').onclick = startMatch;
+  $('#btnAgain').onclick = () => startMatch();
+  $('#btnLobbyStart').onclick = () => { sUI(); startMatch(); };
+  $('#btnLobbyLeave').onclick = () => quitToMenu();
   $('#btnMenu').onclick = quitToMenu;
 }
 
@@ -2545,16 +2929,20 @@ function onGunAct(e) {
 
 function renderMain() {
   const lo = profile.loadouts[profile.active];
+  const invite = inviteCodeFromUrl();
   const feat = DAILY.guns.map(g => `<img alt="${esc(g.name)}" src="${gunThumb(g)}" title="${esc(g.name)}">`).join('');
   $('#scr-main').innerHTML = `
   <div class="hero">
     <div class="tag">FREE-FOR-ALL · 5 SKY TOWERS · 8 MAZE BRIDGES</div>
     <h1>Fight above the storm.</h1>
     <p>Five towers rise out of a city that never ends. Glass mazes link the rooftops, the rain never stops, and the player with the most kills when the clock hits zero wins.</p>
+    ${invite ? `<div class="invite-banner">You've been invited to lobby ${esc(invite)}. Pick your loadout, then join.</div>` : ''}
     <div class="row">
-      <button class="btn yellow big" id="btnPlay">Battle</button>
+      ${invite ? `<button class="btn yellow big" id="btnJoin">Join lobby</button>` : `<button class="btn yellow big" id="btnPlay">Battle online</button>`}
+      <button class="btn green" id="btnSolo">Solo vs bots</button>
       <button class="btn pink" id="btnShopGo">Daily shop</button>
     </div>
+    <p class="muted" style="font-size:15px;margin-top:12px">${invite ? 'Joining drops you into your friend’s match, even if it already started.' : 'Battle online opens a lobby with an invite link for your friends. Bots fill the empty spots.'}</p>
   </div>
   <div class="side">
     <div class="panel">
@@ -2575,11 +2963,13 @@ function renderMain() {
     </div>
     <div class="panel">
       <h3>CONTROLS</h3>
-      <div class="controls-list"><b>WASD</b><span>Move</span><b>MOUSE</b><span>Aim · LMB fire · RMB zoom</span><b>SPACE</b><span>Jump</span><b>SHIFT</b><span>Sprint</span><b>F</b><span>Shove: push someone off the edge</span><b>R</b><span>Reload</span><b>1-4 / Q</b><span>Swap gun</span><b>TAB</b><span>Scoreboard</span></div>
+      <div class="controls-list"><b>WASD</b><span>Move</span><b>MOUSE</b><span>Look · left click to fire</span><b>SHIFT</b><span>Aim / zoom</span><b>SPACE</b><span>Jump</span><b>W</b><span>Running forward is a sprint</span><b>F</b><span>Shove: push someone off the edge</span><b>R</b><span>Reload</span><b>1-4 / Q</b><span>Swap gun</span><b>TAB</b><span>Scoreboard</span></div>
     </div>
   </div>`;
   drawFace();
-  $('#btnPlay').onclick = () => { sUI(); startMatch(); };
+  if ($('#btnPlay')) $('#btnPlay').onclick = () => { sUI(); hostLobby(); };
+  if ($('#btnJoin')) $('#btnJoin').onclick = () => { sUI(); joinLobby(invite); };
+  $('#btnSolo').onclick = () => { sUI(); netClose(); startMatch(); };
   $('#btnShopGo').onclick = () => showScreen('shop');
   $('#inName').oninput = e => { profile.name = e.target.value.trim().slice(0, 14) || 'You'; saveProfile(); };
   $('#btnLook').onclick = () => { profile.look = Math.floor(Math.random() * 1e9); saveProfile(); drawFace(); };
@@ -2710,7 +3100,7 @@ async function boot() {
   $('#menu').hidden = false; camera.fov = 70; camera.updateProjectionMatrix();
   showScreen('main'); updateBadge();
   frame();
-  window.__bs = { G, startMatch, NODES, BRIDGES, COL, findPath, nearestNode, get renderer() { return renderer; }, get scene() { return scene; }, get camera() { return camera; }, updateBot, updateRain };
+  window.__bs = { G, startMatch, NODES, BRIDGES, COL, findPath, nearestNode, get renderer() { return renderer; }, get scene() { return scene; }, get camera() { return camera; }, updateBot, updateRain, NET, hostLobby, joinLobby };
 }
 boot().catch(e => { console.error(e); const l = $('#loading'); if (l) l.innerHTML = '<div>COULD NOT START: ' + esc(e.message) + '</div>'; });
 
