@@ -323,7 +323,7 @@ h3{font-family:var(--f-display);font-size:11px;margin:0 0 10px;color:var(--mute)
 </div>
 
 <div id="toast"></div>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
@@ -1580,29 +1580,65 @@ async function initOwner() { OWNER.me = !!(profile.ownerKey && await checkOwnerK
 const crown = owner => owner ? '♛ ' : '';
 
 /* ================= online play ================= */
-// Peer-to-peer: the host's browser runs the match (bots, damage, kills, timer).
-// Lobbies live in numbered rooms, so the hub can find everyone who is playing.
-const NET = { mode: 'off', peer: null, conns: new Map(), host: null, code: '', myId: '', sendT: 0, connected: false, joinTimer: null };
-const PEER_PREFIX = 'blockstorm-dc-';
-const ROOMS = 10, MAX_PLAYERS = 12;
-const roomId = n => PEER_PREFIX + 'room-' + n;
+// The host's browser runs the match (bots, damage, kills, timer). Hosts post their
+// lobby to the relay so every player's hub can list it and join with one click.
+const NET = { mode: 'off', client: null, gen: 0, broker: 0, conns: new Map(), code: '', myId: '', sendT: 0, connected: false, joinTimer: null };
+// Everything travels through a public relay over a secure websocket, so players on
+// any home network can reach each other (no direct browser-to-browser links).
+const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const TOPIC = 'blockstorm-dc7';
+const PEER_PREFIX = 'H';   // host character ids start with this
+const MAX_PLAYERS = 12;
+const TP = {
+  lobby: room => `${TOPIC}/lobby/${room}`,
+  host: room => `${TOPIC}/r/${room}/h`,
+  all: room => `${TOPIC}/r/${room}/a`,
+  me: (room, id) => `${TOPIC}/r/${room}/c/${id}`,
+};
 function netActive() { return NET.mode === 'host' || NET.mode === 'client'; }
 function isClient() { return NET.mode === 'client'; }
-function inviteLink() { return location.origin + location.pathname + '?join=' + NET.code; }
-function inviteCodeFromUrl() { try { const c = new URLSearchParams(location.search).get('join'); return c && /^\d{1,2}$/.test(c) && +c >= 1 && +c <= ROOMS ? +c : null; } catch (e) { return null; } }
+function inviteLink() { return location.origin + location.pathname + '?join=' + NET.code + '&b=' + NET.broker; }
+function inviteCodeFromUrl() {
+  try { const q = new URLSearchParams(location.search); const c = q.get('join'); if (!c || !/^[A-Z0-9]{6}$/.test(c)) return null; return { room: c, b: clamp(+q.get('b') || 0, 0, BROKERS.length - 1) }; } catch (e) { return null; }
+}
 function charById(id) { return G.chars.find(c => c.id === id) || null; }
 const cleanName = n => String(n || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 14);
+function makeCode() { const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 6; i++) s += a[Math.floor(Math.random() * a.length)]; return s; }
+function relayAvailable() { return typeof mqtt !== 'undefined'; }
+/* connect to one relay; resolves to the client or null */
+function relayConnect(b, will) {
+  return new Promise(res => {
+    let done = false;
+    const c = mqtt.connect(BROKERS[b], { clientId: 'bs_' + Math.random().toString(36).slice(2, 12), clean: true, keepalive: 15, connectTimeout: 7000, reconnectPeriod: 2500, will });
+    const fin = ok => { if (done) return; done = true; if (!ok) { try { c.end(true); } catch (e) { } } res(ok ? c : null); };
+    c.once('connect', () => fin(true));
+    c.once('error', () => fin(false));
+    setTimeout(() => fin(false), 8000);
+  });
+}
+async function relayFirst(willFor) {
+  for (let b = 0; b < BROKERS.length; b++) { const c = await relayConnect(b, willFor ? willFor(b) : undefined); if (c) return { c, b }; }
+  return null;
+}
+const pub = (topic, m, retain = false) => { try { if (NET.client) NET.client.publish(topic, typeof m === 'string' ? m : JSON.stringify(m), { qos: 0, retain }); } catch (e) { } };
 
 function netSend(m) {
-  if (NET.mode === 'host') { for (const [, info] of NET.conns) if (info.conn.open) info.conn.send(m); }
-  else if (NET.mode === 'client' && NET.host && NET.host.open) NET.host.send(m);
+  if (NET.mode === 'host') pub(TP.all(NET.code), m);
+  else if (NET.mode === 'client') { m.from = NET.myId; pub(TP.host(NET.code), m); }
 }
-function netSendTo(id, m) { const info = NET.conns.get(id); if (info && info.conn.open) info.conn.send(m); }
-function netRelay(fromId, m) { for (const [pid, info] of NET.conns) if (pid !== fromId && info.conn.open) info.conn.send(m); }
+function netSendTo(id, m) { if (NET.mode === 'host' && NET.conns.has(id)) pub(TP.me(NET.code, id), m); }
+function netRelay(fromId, m) { m.x = fromId; pub(TP.all(NET.code), m); }
 function netClose() {
-  clearTimeout(NET.joinTimer);
-  try { if (NET.peer) NET.peer.destroy(); } catch (e) { }
-  NET.peer = null; NET.host = null; NET.conns.clear(); NET.mode = 'off'; NET.connected = false;
+  clearTimeout(NET.joinTimer); clearInterval(NET.beat);
+  const c = NET.client;
+  if (c) {
+    try {
+      if (NET.mode === 'host') pub(TP.lobby(NET.code), '', true);
+      else if (NET.mode === 'client') pub(TP.host(NET.code), { t: 'bye', from: NET.myId });
+    } catch (e) { }
+    setTimeout(() => { try { c.end(true); } catch (e) { } }, 300);
+  }
+  NET.client = null; NET.conns.clear(); NET.mode = 'off'; NET.connected = false; NET.gen = (NET.gen || 0) + 1;
 }
 function cleanGuns(list) {
   const out = [];
@@ -1642,53 +1678,62 @@ function kickPlayer(id) {
 }
 function hostKick(id) {
   const info = NET.conns.get(id); if (!info) return;
-  try { info.conn.send({ t: 'kicked' }); } catch (e) { }
-  setTimeout(() => { try { info.conn.close(); } catch (e) { } }, 300);
+  info.conn.send({ t: 'kicked' });
   hostDrop(id);
 }
 
 /* ---------- hosting ---------- */
-function hostLobby(room = 1) {
+async function hostLobby() {
   audioInit();
-  if (typeof Peer === 'undefined') { toast('Online play is not available here. Starting a solo match.'); startMatch(); return; }
-  if (room > ROOMS) { netClose(); $('#lobby').hidden = true; toast(`All ${ROOMS} lobbies are taken. Join one from the hub instead.`); return; }
+  if (!relayAvailable()) { toast('Online play is not available here. Starting a solo match.'); startMatch(); return; }
   netClose(); hubStop();
-  NET.code = String(room); NET.mode = 'host';
+  const gen = NET.gen;
+  const room = makeCode();
+  NET.code = room; NET.mode = 'host'; NET.myId = PEER_PREFIX + room;
   showLobby('CREATING LOBBY', 'Opening your lobby…');
-  const peer = new Peer(roomId(room), { debug: 0 });
-  NET.peer = peer;
-  peer.on('open', id => { NET.myId = id; renderLobby(lobbyPlayers()); });
-  peer.on('connection', conn => {
-    conn.on('data', d => { try { hostOnData(conn, d); } catch (e) { console.warn(e); } });
-    conn.on('close', () => hostDrop(conn.peer));
-    conn.on('error', () => hostDrop(conn.peer));
+  // if this tab disappears, the relay clears the lobby from the hub
+  const r = await relayFirst(b => ({ topic: TP.lobby(room), payload: '', qos: 1, retain: true }));
+  if (NET.gen !== gen) { if (r) r.c.end(true); return; }
+  if (!r) { netClose(); $('#lobby').hidden = true; toast("Couldn't reach the online service. Check your internet and try again."); return; }
+  NET.client = r.c; NET.broker = r.b;
+  r.c.subscribe(TP.host(room));
+  r.c.on('message', (topic, payload) => {
+    if (NET.client !== r.c) return;
+    let m; try { m = JSON.parse(payload.toString()); } catch (e) { return; }
+    if (!m || typeof m.from !== 'string' || m.from.length > 24) return;
+    const pid = m.from;
+    let info = NET.conns.get(pid);
+    if (info) info.seen = performance.now();
+    if (m.t === 'bye') { hostDrop(pid); return; }
+    const conn = info ? info.conn : { peer: pid, send: x => pub(TP.me(room, pid), x) };
+    try { hostOnData(conn, m); } catch (e) { console.warn(e); }
   });
-  peer.on('disconnected', () => { try { if (NET.mode === 'host' && NET.peer === peer) peer.reconnect(); } catch (e) { } });
-  peer.on('error', e => {
-    if (NET.peer !== peer) return;
-    if (e.type === 'unavailable-id') { hostLobby(room + 1); return; }
-    if (e.type === 'peer-unavailable') return;
-    console.warn('peer', e.type);
-    if (!NET.myId) { netClose(); $('#lobby').hidden = true; toast('Could not open an online lobby. Starting a solo match.'); startMatch(); }
-  });
+  renderLobby(lobbyPlayers()); advertise();
+  NET.beat = setInterval(() => {
+    advertise();
+    if (G.state !== 'play') netSend({ t: 'lobby', list: lobbyPlayers() });
+    const now = performance.now();
+    for (const [pid, info] of NET.conns) if (now - info.seen > 12000) hostDrop(pid);
+  }, 3000);
 }
+/* the hub reads this */
+function advertise() { if (NET.mode === 'host') pub(TP.lobby(NET.code), lobbyInfo(), true); }
 function lobbyInfo() {
   const humans = 1 + NET.conns.size;
-  return { t: 'info', host: profile.name, owner: OWNER.me || [...NET.conns.values()].some(i => i.owner), hostOwner: OWNER.me, players: humans, max: MAX_PLAYERS,
+  return { room: NET.code, b: NET.broker, ts: Date.now(), host: profile.name, owner: OWNER.me || [...NET.conns.values()].some(i => i.owner), hostOwner: OWNER.me, players: humans, max: MAX_PLAYERS,
     names: lobbyPlayers().map(p => crown(p.owner) + p.name).slice(0, 12), state: G.state === 'play' ? 'play' : 'lobby', left: Math.max(0, Math.round(G.left || 0)) };
 }
 function hostOnData(conn, m) {
   if (!m || typeof m !== 'object') return;
   const pid = conn.peer;
-  if (m.t === 'info?') { conn.send(lobbyInfo()); setTimeout(() => { if (!NET.conns.has(pid)) conn.close(); }, 1500); return; }
   if (m.t === 'hello') {
-    if (NET.conns.has(pid)) return;
-    if (NET.conns.size >= MAX_PLAYERS - 1) { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 500); return; }
+    if (NET.conns.has(pid)) { conn.send({ t: 'welcome', code: NET.code, nonce: NET.conns.get(pid).nonce }); return; }
+    if (NET.conns.size >= MAX_PLAYERS - 1) { conn.send({ t: 'full' }); return; }
     let name = cleanName(m.name) || 'Player';
     const claimsOwner = isOwnerName(name);
     if (claimsOwner && !m.owner) name = 'Player' + Math.floor(Math.random() * 900 + 100);
     const nonce = Math.random().toString(36).slice(2) + Date.now();
-    const info = { conn, name, look: (m.look | 0) >>> 0, guns: cleanGuns(m.guns), owner: false, nonce, pendingOwner: claimsOwner && !!m.owner };
+    const info = { conn, name, look: (m.look | 0) >>> 0, guns: cleanGuns(m.guns), owner: false, nonce, pendingOwner: claimsOwner && !!m.owner, seen: performance.now() };
     NET.conns.set(pid, info);
     conn.send({ t: 'welcome', code: NET.code, nonce });
     if (info.pendingOwner) setTimeout(() => { if (info.pendingOwner) { info.pendingOwner = false; renameUnverified(pid); } }, 7000);
@@ -1744,7 +1789,7 @@ function renameUnverified(pid) {
     lobbyChanged(); if (G.state === 'play') sendRoster();
   }
 }
-function lobbyChanged() { if (G.state !== 'play') { netSend({ t: 'lobby', list: lobbyPlayers() }); renderLobby(lobbyPlayers()); } }
+function lobbyChanged() { advertise(); if (G.state !== 'play') { netSend({ t: 'lobby', list: lobbyPlayers() }); renderLobby(lobbyPlayers()); } }
 function hostDrop(pid) {
   const info = NET.conns.get(pid); if (!info) return;
   NET.conns.delete(pid);
@@ -1764,7 +1809,7 @@ function sendSnap() {
 }
 function netTick(dt) {
   if (!netActive()) return;
-  NET.sendT -= dt; if (NET.sendT > 0) return; NET.sendT = 1 / 15;
+  NET.sendT -= dt; if (NET.sendT > 0) return; NET.sendT = 1 / 12;
   if (NET.mode === 'host') sendSnap();
   else if (G.player && G.player.alive) {
     const p = G.player;
@@ -1786,33 +1831,44 @@ function setOwner(ch, on) { ch.owner = on; ch.tag = retag(ch); }
 function retag(ch) { ch.model.root.remove(ch.tag.sprite); const t = makeTag(crown(ch.owner) + ch.name, ch.isPlayer, ch.owner); ch.model.root.add(t.sprite); t.draw(Math.max(0, ch.hp), ch.sh); return t; }
 
 /* ---------- joining ---------- */
-function joinLobby(room) {
+async function joinLobby(room, b = 0) {
   audioInit();
-  if (typeof Peer === 'undefined') { toast('Online play is not available here.'); return; }
+  if (!relayAvailable()) { toast('Online play is not available here.'); return; }
   netClose(); hubStop();
-  NET.mode = 'client'; NET.code = String(room);
-  showLobby('JOINING', `Connecting to lobby #${room}…`);
-  const peer = new Peer({ debug: 0 }); NET.peer = peer;
-  const fail = msg => { if (NET.mode !== 'client' || NET.peer !== peer) return; netClose(); quitToMenu(); toast(msg); };
-  NET.joinTimer = setTimeout(() => { if (!NET.connected) fail(`Couldn't reach lobby #${room}. It may have closed.`); }, 12000);
-  peer.on('open', id => {
-    NET.myId = id;
-    const conn = peer.connect(roomId(room), { reliable: true }); NET.host = conn;
-    conn.on('open', () => conn.send({ t: 'hello', name: profile.name || 'Player', owner: OWNER.me, look: profile.look, guns: gunsPayload(myLoadoutGuns()) }));
-    conn.on('data', d => { try { clientOnData(d, fail); } catch (e) { console.warn(e); } });
-    conn.on('close', () => fail('The host left, so the lobby closed.'));
-    conn.on('error', () => fail('Lost the connection to the host.'));
+  const gen = NET.gen;
+  const myId = 'p' + Math.random().toString(36).slice(2, 12);
+  NET.mode = 'client'; NET.code = room; NET.myId = myId; NET.broker = b;
+  showLobby('JOINING', `Connecting to ${room}…`);
+  const fail = msg => { if (NET.mode !== 'client' || NET.gen !== gen) return; netClose(); quitToMenu(); toast(msg); };
+  const c = await relayConnect(b, { topic: TP.host(room), payload: JSON.stringify({ t: 'bye', from: myId }), qos: 0, retain: false });
+  if (NET.gen !== gen) { if (c) c.end(true); return; }
+  if (!c) { fail("Couldn't reach the online service. Check your internet and try again."); return; }
+  NET.client = c; NET.hostSeen = performance.now();
+  c.subscribe([TP.all(room), TP.me(room, myId)], () => {
+    if (NET.client !== c) return;
+    const hello = () => netSend({ t: 'hello', name: profile.name || 'Player', owner: OWNER.me, look: profile.look, guns: gunsPayload(myLoadoutGuns()) });
+    hello();
+    // say hello again in case the first one got lost
+    const retry = setInterval(() => { if (NET.client !== c || NET.connected) { clearInterval(retry); return; } hello(); }, 2500);
   });
-  peer.on('error', e => {
-    console.warn('peer', e.type);
-    if (e.type === 'peer-unavailable') fail(`Lobby #${room} isn't open anymore. Pick another one in the hub.`);
-    else if (!NET.connected) fail('Could not connect to the online lobby service.');
+  c.on('message', (topic, payload) => {
+    if (NET.client !== c) return;
+    let m; try { m = JSON.parse(payload.toString()); } catch (e) { return; }
+    if (!m || m.x === myId) return;
+    NET.hostSeen = performance.now();
+    try { clientOnData(m, fail); } catch (e) { console.warn(e); }
   });
+  NET.joinTimer = setTimeout(() => { if (!NET.connected) fail("That lobby didn't answer. It may have just closed."); }, 12000);
+  NET.beat = setInterval(() => {
+    if (NET.connected && performance.now() - NET.hostSeen > 9000) fail('The host left, so the lobby closed.');
+    else if (NET.connected) netSend({ t: 'ping' });
+  }, 2000);
 }
 function clientOnData(m, fail) {
   if (!m || typeof m !== 'object') return;
   switch (m.t) {
     case 'welcome':
+      if (NET.connected) break;
       NET.connected = true; clearTimeout(NET.joinTimer); renderLobby([]);
       if (OWNER.me && m.nonce) ownerSign(profile.ownerKey, String(m.nonce)).then(s => netSend({ t: 'prove', s }));
       break;
@@ -1873,71 +1929,71 @@ function applySnap(m) {
 }
 
 /* ================= the hub: every live lobby ================= */
-const HUB = { peer: null, scanning: false, pend: {}, list: [], timer: null, status: 'idle' };
-function hubStop() { clearInterval(HUB.timer); HUB.timer = null; try { if (HUB.peer) HUB.peer.destroy(); } catch (e) { } HUB.peer = null; HUB.scanning = false; HUB.pend = {}; }
-function hubStart() { if (HUB.timer) return; scanLobbies(); HUB.timer = setInterval(() => { if (!$('#menu').hidden && curScreen === 'main' && $('#lobby').hidden && !netActive()) scanLobbies(); }, 9000); }
-function scanLobbies() {
-  if (typeof Peer === 'undefined') { HUB.status = 'offline'; renderHub(); return; }
-  if (HUB.scanning || netActive()) return;
-  HUB.scanning = true; HUB.status = HUB.list.length ? 'ok' : 'scanning'; renderHub();
-  const found = []; let pending = ROOMS;
-  const finish = () => { if (!HUB.scanning) return; HUB.scanning = false; HUB.list = found.sort((a, b) => a.room - b.room); HUB.status = 'ok'; renderHub(); };
-  const go = () => {
-    for (let n = 1; n <= ROOMS; n++) {
-      const id = roomId(n); let done = false;
-      const end = () => { if (done) return; done = true; delete HUB.pend[id]; try { conn.close(); } catch (e) { } if (--pending <= 0) finish(); };
-      HUB.pend[id] = end;
-      const conn = HUB.peer.connect(id, { reliable: true });
-      conn.on('open', () => conn.send({ t: 'info?' }));
-      conn.on('data', m => {
-        if (m && m.t === 'info') found.push({ room: n, host: cleanName(m.host) || 'Player', owner: !!m.owner, hostOwner: !!m.hostOwner, players: clamp(m.players | 0, 1, MAX_PLAYERS), max: MAX_PLAYERS,
-          names: Array.isArray(m.names) ? m.names.slice(0, 12).map(s => String(s).slice(0, 18)) : [], state: m.state === 'play' ? 'play' : 'lobby', left: m.left | 0 });
-        end();
-      });
-      conn.on('error', end);
-      setTimeout(end, 5000);
-    }
-  };
-  if (HUB.peer && HUB.peer.open) go();
-  else {
-    try { if (HUB.peer) HUB.peer.destroy(); } catch (e) { }
-    const p = HUB.peer = new Peer({ debug: 0 });
-    p.on('open', go);
-    p.on('error', e => {
-      if (e.type === 'peer-unavailable') { const id = String(e.message || '').split(' ').pop(); if (HUB.pend[id]) HUB.pend[id](); return; }
-      HUB.scanning = false; HUB.status = 'error'; renderHub();
-    });
-  }
+const HUB = { clients: [], entries: new Map(), list: [], timer: null, status: 'idle' };
+function hubStop() {
+  clearInterval(HUB.timer); HUB.timer = null;
+  for (const c of HUB.clients) { try { c.end(true); } catch (e) { } }
+  HUB.clients = []; HUB.entries.clear(); HUB.list = []; HUB.status = 'idle';
 }
+function hubStart() {
+  if (HUB.timer) return;
+  if (!relayAvailable()) { HUB.status = 'offline'; renderHub(); return; }
+  HUB.status = 'scanning'; renderHub();
+  // listen to every relay; hosts post their lobby there every few seconds
+  BROKERS.forEach((url, b) => {
+    const c = mqtt.connect(url, { clientId: 'bsh_' + Math.random().toString(36).slice(2, 12), clean: true, keepalive: 20, connectTimeout: 7000, reconnectPeriod: 3000 });
+    HUB.clients.push(c);
+    c.on('connect', () => { c.subscribe(`${TOPIC}/lobby/+`); if (HUB.status !== 'ok') { HUB.status = 'ok'; renderHub(); } });
+    c.on('message', (topic, payload) => {
+      const room = topic.split('/').pop(); const key = b + ':' + room;
+      const s = payload.toString();
+      if (!s) { HUB.entries.delete(key); refreshHub(); return; }
+      let m; try { m = JSON.parse(s); } catch (e) { return; }
+      if (!m || !/^[A-Z0-9]{6}$/.test(room)) return;
+      // skip lobbies whose host stopped updating long ago (crashed tabs)
+      if (typeof m.ts === 'number' && Math.abs(Date.now() - m.ts) > 45000) return;
+      HUB.entries.set(key, { seen: performance.now(), l: { room, b, host: cleanName(m.host) || 'Player', owner: !!m.owner, hostOwner: !!m.hostOwner, players: clamp(m.players | 0, 1, MAX_PLAYERS), max: MAX_PLAYERS,
+        names: Array.isArray(m.names) ? m.names.slice(0, 12).map(x => String(x).slice(0, 18)) : [], state: m.state === 'play' ? 'play' : 'lobby', left: m.left | 0 } });
+      refreshHub();
+    });
+  });
+  setTimeout(() => { if (HUB.status === 'scanning') { HUB.status = 'error'; renderHub(); } }, 9000);
+  HUB.timer = setInterval(refreshHub, 2000);
+}
+function refreshHub() {
+  const now = performance.now();
+  for (const [k, e] of HUB.entries) if (now - e.seen > 11000) HUB.entries.delete(k);
+  HUB.list = [...HUB.entries.values()].map(e => e.l).sort((a, b) => (b.state === 'lobby') - (a.state === 'lobby') || b.players - a.players);
+  renderHub();
+}
+function scanLobbies() { hubStop(); hubStart(); }
 function renderHub() {
   const el = $('#hubList'); if (!el) return;
   const st = $('#hubStatus');
   if (HUB.status === 'offline') { st.textContent = 'Online play is not available in this window.'; el.innerHTML = ''; return; }
-  if (HUB.status === 'error') { st.textContent = "Couldn't reach the lobby service. Retrying…"; }
-  else st.textContent = HUB.scanning ? 'Looking for players…' : `${HUB.list.length} live ${HUB.list.length === 1 ? 'lobby' : 'lobbies'} · updates every few seconds`;
-  if (!HUB.list.length) { el.innerHTML = HUB.scanning && HUB.status === 'scanning' ? '' : `<div class="hub-empty">No one is playing right now. Create a lobby and it shows up here for everyone.</div>`; return; }
+  st.textContent = HUB.status === 'error' ? "Couldn't reach the online service. Retrying…" : HUB.status === 'scanning' ? 'Looking for players…' : `${HUB.list.length} live ${HUB.list.length === 1 ? 'lobby' : 'lobbies'} · updates live`;
+  if (!HUB.list.length) { el.innerHTML = HUB.status === 'scanning' ? '' : `<div class="hub-empty">No one is playing right now. Create a lobby and it shows up here for everyone.</div>`; return; }
   el.innerHTML = HUB.list.map(l => `<div class="hub-row ${l.owner ? 'own' : ''}">
     <div class="hub-main"><b>${esc(crown(l.hostOwner) + l.host)}'s lobby</b>
-      <span class="muted">#${l.room} · ${l.players}/${l.max} players · ${l.state === 'play' ? `In a match, ${Math.floor(l.left / 60)}:${String(l.left % 60).padStart(2, '0')} left` : 'Waiting to start'}${l.owner && !l.hostOwner ? ' · ♛ owner inside' : ''}</span>
+      <span class="muted">${l.players}/${l.max} players · ${l.state === 'play' ? `In a match, ${Math.floor(l.left / 60)}:${String(l.left % 60).padStart(2, '0')} left` : 'Waiting to start'}${l.owner && !l.hostOwner ? ' · ♛ owner inside' : ''}</span>
       <span class="hub-names">${l.names.map(esc).join(' · ')}</span></div>
-    <button class="btn green small" data-join="${l.room}" ${l.players >= l.max ? 'disabled' : ''}>${l.players >= l.max ? 'Full' : 'Join'}</button>
+    <button class="btn green small" data-join="${l.room}" data-b="${l.b}" ${l.players >= l.max ? 'disabled' : ''}>${l.players >= l.max ? 'Full' : 'Join'}</button>
   </div>`).join('');
 }
 function quickPlay() {
   const open = HUB.list.filter(l => l.players < l.max).sort((a, b) => b.players - a.players);
-  if (open.length) joinLobby(open[0].room); else hostLobby();
+  if (open.length) joinLobby(open[0].room, open[0].b); else hostLobby();
 }
 
 /* clicks: copy links, kick, join from hub */
 document.addEventListener('click', e => {
   const k = e.target.closest('[data-kick]'); if (k) { kickPlayer(k.dataset.kick); return; }
-  const j = e.target.closest('[data-join]'); if (j) { sUI(); joinLobby(+j.dataset.join); return; }
+  const j = e.target.closest('[data-join]'); if (j) { sUI(); joinLobby(j.dataset.join, +j.dataset.b || 0); return; }
   const b = e.target.closest('[data-copy]'); if (!b) return;
   const inp = $(b.dataset.copy); const text = inp.value;
   const done = () => { b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy link', 1400); };
   try { navigator.clipboard.writeText(text).then(done, () => { inp.select(); }); } catch (err) { inp.select(); }
 });
-
 
 /* ================= engine + match ================= */
 let renderer, scene, camera, vmScene, vmCam, vmFlash, vmFlashLight;
@@ -3105,9 +3161,9 @@ function renderMain() {
     <div class="tag">FREE-FOR-ALL · 5 SKY TOWERS · 8 MAZE BRIDGES</div>
     <h1>Fight above the storm.</h1>
     <p>Five towers rise out of a city that never ends. Glass mazes link the rooftops, the rain never stops, and the player with the most kills when the clock hits zero wins.</p>
-    ${invite ? `<div class="invite-banner">You've been invited to lobby #${invite}. Pick your loadout, then join.</div>` : ''}
+    ${invite ? `<div class="invite-banner">You've been invited to a lobby. Pick your loadout, then join.</div>` : ''}
     <div class="row">
-      ${invite ? `<button class="btn yellow big" id="btnJoin">Join lobby #${invite}</button>` : `<button class="btn yellow big" id="btnQuick">Quick play</button>`}
+      ${invite ? `<button class="btn yellow big" id="btnJoin">Join lobby</button>` : `<button class="btn yellow big" id="btnQuick">Quick play</button>`}
       <button class="btn pink" id="btnPlay">Create lobby</button>
       <button class="btn green" id="btnSolo">Solo vs bots</button>
     </div>
@@ -3143,7 +3199,7 @@ function renderMain() {
   </div>`;
   drawFace();
   $('#btnPlay').onclick = () => { sUI(); hostLobby(); };
-  if ($('#btnJoin')) $('#btnJoin').onclick = () => { sUI(); joinLobby(invite); };
+  if ($('#btnJoin')) $('#btnJoin').onclick = () => { sUI(); joinLobby(invite.room, invite.b); };
   if ($('#btnQuick')) $('#btnQuick').onclick = () => { sUI(); quickPlay(); };
   $('#btnSolo').onclick = () => { sUI(); netClose(); startMatch(); };
   $('#btnHubRefresh').onclick = () => scanLobbies();
